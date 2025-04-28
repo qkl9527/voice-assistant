@@ -1,0 +1,8 @@
+.venv/*
+
+.DS_Store
+**/.DS_Store
+
+**/__pycache__
+
+augment-dev/*

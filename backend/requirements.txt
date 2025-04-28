@@ -1,0 +1,12 @@
+flask
+torch
+flask-cors
+funasr
+pyautogui==0.9.54
+pyperclip==1.8.2
+# Windows 平台
+pywin32==306; sys_platform == 'win32'
+# macOS 平台
+pyobjc==10.0; sys_platform == 'darwin'
+# Linux 平台
+python-xlib==0.33; sys_platform == 'linux'

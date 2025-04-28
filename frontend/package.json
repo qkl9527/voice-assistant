@@ -1,0 +1,82 @@
+{
+  "name": "voice-assistant",
+  "private": true,
+  "version": "0.1.0",
+  "author": {
+    "name": "qklin",
+    "email": "qklandy@gmail.com"
+  },
+  "description": "Voice Assistant: 实时语音助手",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "electron:dev": "vite --mode=development",
+    "electron:build": "vite build && electron-builder",
+    "electron:build:win": "vite build && electron-builder --win",
+    "electron:build:linux": "vite build && electron-builder --linux",
+    "electron:preview": "vite preview --mode=development"
+  },
+  "dependencies": {
+    "@fortawesome/fontawesome-free": "^6.7.2",
+    "vue": "^3.5.13"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.2.2",
+    "electron": "^35.2.0",
+    "electron-builder": "^26.0.12",
+    "vite": "^6.3.1",
+    "vite-plugin-electron": "^0.29.0"
+  },
+  "main": "electron/main.js",
+  "homepage": "./",
+  "build": {
+    "appId": "voice-assistant.qklin.com",
+    "productName": "voiceAssistant",
+    "directories": {
+      "output": "release/${version}"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "../backend",
+        "to": "backend"
+      },
+      {
+        "from": "../.venv",
+        "to": ".venv"
+      }
+    ],
+    "extraFiles": [],
+    "mac": {
+      "icon": "build/icons/icon.icns",
+      "artifactName": "${productName}_${version}.${ext}",
+      "target": [
+        "dmg"
+      ]
+    },
+    "win": {
+      "icon": "build/icons/icon.png",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "${productName}_${version}.${ext}"
+    },
+    "linux": {
+      "icon": "build/icons/icon.png",
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "artifactName": "${productName}_${version}.${ext}"
+    }
+  }
+}
