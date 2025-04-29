@@ -80,44 +80,44 @@ jobs:
           name: macos-artifacts
           path: frontend/release/**/*.dmg
 
-  build-linux:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
+  # build-linux:
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - uses: actions/checkout@v3
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v3
-        with:
-          node-version: "18"
+  #     - name: Setup Node.js
+  #       uses: actions/setup-node@v3
+  #       with:
+  #         node-version: "18"
 
-      - name: Setup Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: "3.11"
+  #     - name: Setup Python
+  #       uses: actions/setup-python@v4
+  #       with:
+  #         python-version: "3.11"
 
-      - name: Install dependencies
-        run: |
-          python -m pip install uv
-          uv venv .venv
-          source .venv/bin/activate
-          python scripts/setup_ffmpeg.py
-          cd backend
-          uv pip install -r requirements.txt
-          cd ../frontend
-          npm install
+  #     - name: Install dependencies
+  #       run: |
+  #         python -m pip install uv
+  #         uv venv .venv
+  #         source .venv/bin/activate
+  #         python scripts/setup_ffmpeg.py
+  #         cd backend
+  #         uv pip install -r requirements.txt
+  #         cd ../frontend
+  #         npm install
 
-      - name: Build
-        run: |
-          cd frontend
-          npm run electron:build:linux
+  #     - name: Build
+  #       run: |
+  #         cd frontend
+  #         npm run electron:build:linux
 
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: linux-artifacts
-          path: |
-            frontend/release/**/*.AppImage
-            frontend/release/**/*.deb
+  #     - name: Upload artifacts
+  #       uses: actions/upload-artifact@v4
+  #       with:
+  #         name: linux-artifacts
+  #         path: |
+  #           frontend/release/**/*.AppImage
+  #           frontend/release/**/*.deb
 
   create-release:
     needs: [build-windows, build-macos]
