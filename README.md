@@ -1,14 +1,20 @@
 # Voice_Assistant - 跨平台语音识别应用
 
-基于 FunASR 的跨平台语音识别桌面应用，支持 Windows、macOS 和 Linux。
+基于 FunASR 的跨平台[实时]AI 语音识别桌面应用，支持 Windows、macOS 和 Linux。
+
+因 linux 打包文件较大，所以 release 没有 linux 版本，用户可以根据下方教程自己运行起来(教程很细也很简单)
+
+## 软件截图
+
+![voice-assistant-screeshot.png](./voice-assistant-screeshot.png)
 
 ## 功能特点
 
-- 实时语音识别
+- 实时 AI 语音识别, 基于 FunASR 的高精度语音识别
 - 自动将识别文本插入到当前系统焦点位置
+- 语音对话的历史记录管理
+- 简洁直观的用户界面，用户可自定义大部分配置
 - 跨平台支持 (Windows, macOS, Linux)
-- 简洁直观的用户界面
-- 基于 FunASR 的高精度语音识别
 
 ## 技术栈
 
