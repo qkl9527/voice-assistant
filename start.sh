@@ -66,6 +66,14 @@ fi
 # 导出环境变量，让 Electron 知道 Python 解释器的位置
 export ASR_PYTHON_PATH="$PYTHON_PATH"
 
+# 安装 FFmpeg
+echo "正在设置 FFmpeg..."
+python scripts/setup_ffmpeg.py
+if [ $? -ne 0 ]; then
+    echo "FFmpeg 设置失败"
+    exit 1
+fi
+
 # 启动应用
 echo "启动应用..."
 cd $FRONTEND_DIR

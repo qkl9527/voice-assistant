@@ -53,6 +53,14 @@ REM 设置 Python 解释器路径
 echo 配置 Python 服务路径...
 set ASR_PYTHON_PATH=%CD%\%VENV_DIR%\Scripts\python.exe
 
+REM 安装 FFmpeg
+echo 正在设置 FFmpeg...
+python scripts/setup_ffmpeg.py
+if %ERRORLEVEL% NEQ 0 (
+    echo FFmpeg 设置失败
+    exit /b 1
+)
+
 REM 启动应用
 echo 启动应用...
 cd %FRONTEND_DIR%
