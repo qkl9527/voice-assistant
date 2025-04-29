@@ -120,7 +120,7 @@ jobs:
             frontend/release/**/*.deb
 
   create-release:
-    needs: [build-windows, build-macos, build-linux]
+    needs: [build-windows, build-macos]
     runs-on: ubuntu-latest
     steps:
       - name: Download all artifacts
