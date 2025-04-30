@@ -16,6 +16,12 @@
 - 简洁直观的用户界面，用户可自定义大部分配置
 - 跨平台支持 (Windows, macOS, Linux)
 
+## 下载
+
+[window 和 macos 下载](https://github.com/qkl9527/voice-assistant/releases)
+
+linux 版本请自己按下面教程可直接运行 或 编译后运行
+
 ## 功能规划(feature)
 
 - [ ] 优化实时语音交互
