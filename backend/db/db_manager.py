@@ -2,6 +2,7 @@ import os
 import sqlite3
 import logging
 import time
+import json
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
@@ -70,6 +71,36 @@ class DBManager:
                 audio_path TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (record_id) REFERENCES recognition_records (id) ON DELETE CASCADE
+            )
+            """
+            )
+
+            # 创建LLM配置表
+            cursor.execute(
+                """
+            CREATE TABLE IF NOT EXISTS llm_configs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                provider TEXT NOT NULL,
+                config_json TEXT NOT NULL,
+                is_default BOOLEAN DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+            )
+
+            # 创建LLM处理记录表
+            cursor.execute(
+                """
+            CREATE TABLE IF NOT EXISTS llm_processed_texts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                record_id INTEGER,
+                original_text TEXT NOT NULL,
+                processed_text TEXT NOT NULL,
+                operation TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (record_id) REFERENCES recognition_records (id) ON DELETE SET NULL
             )
             """
             )
@@ -238,6 +269,289 @@ class DBManager:
         except Exception as e:
             logger.error(f"获取记录失败: {e}")
             return 1
+        finally:
+            if conn:
+                conn.close()
+
+    # LLM配置相关方法
+
+    def save_llm_config(self, provider, config_json, is_default=False):
+        """保存LLM配置
+
+        Args:
+            provider: 服务提供商名称
+            config_json: 配置JSON字符串
+            is_default: 是否为默认配置
+
+        Returns:
+            新配置的ID
+        """
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+
+            # 如果设置为默认，先将所有配置设为非默认
+            if is_default:
+                cursor.execute(
+                    """
+                UPDATE llm_configs
+                SET is_default = 0
+                """
+                )
+
+            # 检查是否已存在该提供商的配置
+            cursor.execute(
+                """
+            SELECT id FROM llm_configs
+            WHERE provider = ?
+            """,
+                (provider,),
+            )
+
+            existing = cursor.fetchone()
+
+            if existing:
+                # 更新现有配置
+                cursor.execute(
+                    """
+                UPDATE llm_configs
+                SET config_json = ?, is_default = ?, updated_at = ?
+                WHERE provider = ?
+                """,
+                    (
+                        config_json,
+                        1 if is_default else 0,
+                        datetime.now().isoformat(),
+                        provider,
+                    ),
+                )
+                config_id = existing[0]
+            else:
+                # 插入新配置
+                cursor.execute(
+                    """
+                INSERT INTO llm_configs (provider, config_json, is_default, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                    (
+                        provider,
+                        config_json,
+                        1 if is_default else 0,
+                        datetime.now().isoformat(),
+                        datetime.now().isoformat(),
+                    ),
+                )
+                config_id = cursor.lastrowid
+
+            conn.commit()
+            logger.info(f"保存LLM配置成功，ID: {config_id}")
+            return config_id
+        except Exception as e:
+            logger.error(f"保存LLM配置失败: {e}")
+            return None
+        finally:
+            if conn:
+                conn.close()
+
+    def get_llm_configs(self):
+        """获取所有LLM配置
+
+        Returns:
+            配置列表
+        """
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+
+            cursor.execute(
+                """
+            SELECT id, provider, config_json, is_default, created_at, updated_at
+            FROM llm_configs
+            ORDER BY is_default DESC, provider ASC
+            """
+            )
+
+            configs = []
+            for row in cursor.fetchall():
+                config = {
+                    "id": row[0],
+                    "provider": row[1],
+                    "config": json.loads(row[2]),
+                    "is_default": bool(row[3]),
+                    "created_at": row[4],
+                    "updated_at": row[5],
+                }
+                configs.append(config)
+
+            logger.info(f"获取LLM配置成功，共 {len(configs)} 条")
+            return configs
+        except Exception as e:
+            logger.error(f"获取LLM配置失败: {e}")
+            return []
+        finally:
+            if conn:
+                conn.close()
+
+    def get_default_llm_config(self):
+        """获取默认LLM配置
+
+        Returns:
+            默认配置，如果没有则返回None
+        """
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+
+            cursor.execute(
+                """
+            SELECT id, provider, config_json, created_at, updated_at
+            FROM llm_configs
+            WHERE is_default = 1
+            LIMIT 1
+            """
+            )
+
+            row = cursor.fetchone()
+            if not row:
+                return None
+
+            config = {
+                "id": row[0],
+                "provider": row[1],
+                "config": json.loads(row[2]),
+                "is_default": True,
+                "created_at": row[3],
+                "updated_at": row[4],
+            }
+
+            logger.info(f"获取默认LLM配置成功: {config['provider']}")
+            return config
+        except Exception as e:
+            logger.error(f"获取默认LLM配置失败: {e}")
+            return None
+        finally:
+            if conn:
+                conn.close()
+
+    def delete_llm_config(self, provider):
+        """删除LLM配置
+
+        Args:
+            provider: 服务提供商名称
+
+        Returns:
+            是否成功删除
+        """
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+
+            cursor.execute(
+                """
+            DELETE FROM llm_configs
+            WHERE provider = ?
+            """,
+                (provider,),
+            )
+
+            conn.commit()
+            logger.info(f"删除LLM配置成功: {provider}")
+            return True
+        except Exception as e:
+            logger.error(f"删除LLM配置失败: {e}")
+            return False
+        finally:
+            if conn:
+                conn.close()
+
+    # LLM处理记录相关方法
+
+    def add_llm_processed_text(
+        self, original_text, processed_text, operation, provider, record_id=None
+    ):
+        """添加LLM处理记录
+
+        Args:
+            original_text: 原始文本
+            processed_text: 处理后的文本
+            operation: 操作类型
+            provider: 服务提供商
+            record_id: 关联的识别记录ID
+
+        Returns:
+            新记录的ID
+        """
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+
+            cursor.execute(
+                """
+            INSERT INTO llm_processed_texts (record_id, original_text, processed_text, operation, provider, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+                (
+                    record_id,
+                    original_text,
+                    processed_text,
+                    operation,
+                    provider,
+                    datetime.now().isoformat(),
+                ),
+            )
+
+            process_id = cursor.lastrowid
+            conn.commit()
+            logger.info(f"添加LLM处理记录成功，ID: {process_id}")
+            return process_id
+        except Exception as e:
+            logger.error(f"添加LLM处理记录失败: {e}")
+            return None
+        finally:
+            if conn:
+                conn.close()
+
+    def get_llm_processed_texts(self, limit=100):
+        """获取LLM处理记录
+
+        Args:
+            limit: 最大返回记录数
+
+        Returns:
+            处理记录列表
+        """
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+
+            cursor.execute(
+                """
+            SELECT id, record_id, original_text, processed_text, operation, provider, created_at
+            FROM llm_processed_texts
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+                (limit,),
+            )
+
+            records = []
+            for row in cursor.fetchall():
+                record = {
+                    "id": row[0],
+                    "record_id": row[1],
+                    "original_text": row[2],
+                    "processed_text": row[3],
+                    "operation": row[4],
+                    "provider": row[5],
+                    "timestamp": row[6],
+                }
+                records.append(record)
+
+            logger.info(f"获取LLM处理记录成功，共 {len(records)} 条")
+            return records
+        except Exception as e:
+            logger.error(f"获取LLM处理记录失败: {e}")
+            return []
         finally:
             if conn:
                 conn.close()

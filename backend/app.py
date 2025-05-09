@@ -4,6 +4,8 @@ import platform
 import tempfile
 import logging
 import argparse
+import asyncio
+import json
 from flask import Flask, request, jsonify, make_response, send_file
 from flask_cors import CORS
 import threading
@@ -16,6 +18,7 @@ import numpy as np
 from utils.postprocess_utils import format_str_v2
 from db.db_manager import DBManager
 from utils.audio_storage import AudioStorage
+from llm.llm_service import LLMServiceManager
 import traceback
 
 # 配置huggingface加速
@@ -48,6 +51,9 @@ temp_dir = tempfile.gettempdir()
 # 初始化数据库管理器和音频存储管理器（稍后会根据命令行参数重新初始化）
 db_manager = None
 audio_storage = None
+
+# 初始化LLM服务管理器
+llm_manager = None
 
 # 模型参数
 model_params = {
@@ -193,8 +199,8 @@ def status():
     global asr_model, model_loading, model_load_error
 
     # 如果模型未加载且未在加载中，启动加载
-    if asr_model is None and not model_loading and model_load_error is None:
-        threading.Thread(target=load_asr_model).start()
+    # if asr_model is None and not model_loading and model_load_error is None:
+    #     threading.Thread(target=load_asr_model).start()
 
     response = jsonify(
         {
@@ -459,7 +465,7 @@ def insert_text():
         return jsonify({"error": f"插入文本失败: {str(e)}"}), 500
 
 
-@app.route("/api/reload_model", methods=["POST"])
+@app.route("/api/reload_model", methods=["GET"])
 def reload_model():
     """重新加载模型"""
     global asr_model, model_loading
@@ -476,7 +482,12 @@ def reload_model():
     if success:
         return jsonify({"success": True, "message": "模型重新加载成功"})
     else:
-        return jsonify({"error": f"模型重新加载失败: {model_load_error}"}), 500
+        return (
+            jsonify(
+                {"success": False, "error": f"模型重新加载失败: {model_load_error}"}
+            ),
+            500,
+        )
 
 
 # 获取历史记录
@@ -535,6 +546,304 @@ def get_audio_file(filename):
     except Exception as e:
         logger.error(f"获取音频文件失败: {e}")
         return jsonify({"error": f"获取音频文件失败: {str(e)}"}), 500
+
+
+# LLM相关API端点
+
+
+# 加载LLM配置
+def load_llm_configs():
+    """从数据库加载LLM配置"""
+    global llm_manager
+
+    try:
+        # 获取所有LLM配置
+        configs = db_manager.get_llm_configs()
+
+        if not configs:
+            logger.info("未找到LLM配置，使用默认配置")
+            return
+
+        # 更新LLM服务管理器配置
+        for config in configs:
+            provider = config["provider"]
+            config_data = config["config"]
+            is_default = config["is_default"]
+
+            # 更新配置
+            llm_manager.update_config(provider, config_data)
+
+            # 如果是默认配置，设置为活动服务
+            if is_default:
+                llm_manager.set_active_service(provider)
+
+        logger.info(f"已加载 {len(configs)} 个LLM配置")
+    except Exception as e:
+        logger.error(f"加载LLM配置失败: {e}")
+
+
+@app.route("/api/llm/configs", methods=["GET"])
+def get_llm_configs():
+    """获取所有LLM配置"""
+    try:
+        configs = db_manager.get_llm_configs()
+
+        # 移除敏感信息
+        safe_configs = []
+        for config in configs:
+            safe_config = {
+                "id": config["id"],
+                "provider": config["provider"],
+                "is_default": config["is_default"],
+                "created_at": config["created_at"],
+                "updated_at": config["updated_at"],
+            }
+
+            # 复制配置，但移除API密钥
+            provider_config = config["config"].copy()
+            if "api_key" in provider_config:
+                provider_config["api_key"] = "******"
+            if "secret_key" in provider_config:
+                provider_config["secret_key"] = "******"
+
+            safe_config["config"] = provider_config
+            safe_configs.append(safe_config)
+
+        return jsonify({"success": True, "configs": safe_configs})
+    except Exception as e:
+        logger.error(f"获取LLM配置失败: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/llm/configs", methods=["POST"])
+def save_llm_config():
+    """保存LLM配置"""
+    try:
+        data = request.json
+
+        if not data or "provider" not in data or "config" not in data:
+            return jsonify({"success": False, "error": "缺少必要参数"}), 400
+
+        provider = data["provider"]
+        config = data["config"]
+        is_default = data.get("is_default", False)
+
+        # 保存到数据库
+        config_id = db_manager.save_llm_config(
+            provider=provider,
+            config_json=json.dumps(config, ensure_ascii=False),
+            is_default=is_default,
+        )
+
+        if not config_id:
+            return jsonify({"success": False, "error": "保存配置失败"}), 500
+
+        # 更新LLM服务管理器配置
+        llm_manager.update_config(provider, config)
+
+        # 如果是默认配置，设置为活动服务
+        if is_default:
+            llm_manager.set_active_service(provider)
+
+        return jsonify({"success": True, "config_id": config_id})
+    except Exception as e:
+        logger.error(f"保存LLM配置失败: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/llm/configs/<provider>", methods=["DELETE"])
+def delete_llm_config(provider):
+    """删除LLM配置"""
+    try:
+        # 从数据库删除
+        success = db_manager.delete_llm_config(provider)
+
+        if not success:
+            return jsonify({"success": False, "error": "删除配置失败"}), 500
+
+        return jsonify({"success": True})
+    except Exception as e:
+        logger.error(f"删除LLM配置失败: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/llm/process", methods=["POST"])
+async def process_text():
+    """使用LLM处理文本"""
+    try:
+        data = request.json
+
+        if not data or "text" not in data or "operation" not in data:
+            return jsonify({"success": False, "error": "缺少必要参数"}), 400
+
+        text = data["text"]
+        operation = data["operation"]
+        record_id = data.get("record_id")
+        provider = data.get("provider")  # 可选，如果不提供则使用默认服务
+
+        # 其他参数
+        kwargs = {}
+        if operation == "translate":
+            kwargs["target_language"] = data.get("target_language", "英文")
+
+        # 处理文本
+        result = await llm_manager.process_text(text, operation, **kwargs)
+
+        if not result["success"]:
+            return jsonify(result), 500
+
+        # 保存处理记录
+        process_id = db_manager.add_llm_processed_text(
+            original_text=text,
+            processed_text=result["result"],
+            operation=operation,
+            provider=provider or llm_manager.active_service,
+            record_id=record_id,
+        )
+
+        result["process_id"] = process_id
+        return jsonify(result)
+    except Exception as e:
+        logger.error(f"处理文本失败: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/llm/processed_texts", methods=["GET"])
+def get_processed_texts():
+    """获取LLM处理记录"""
+    try:
+        limit = request.args.get("limit", default=100, type=int)
+        records = db_manager.get_llm_processed_texts(limit=limit)
+        return jsonify({"success": True, "records": records})
+    except Exception as e:
+        logger.error(f"获取LLM处理记录失败: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/llm/providers", methods=["GET"])
+def get_llm_providers():
+    """获取支持的LLM服务提供商列表"""
+    providers = [
+        # 主流大模型服务
+        {
+            "id": "openai",
+            "name": "OpenAI",
+            "models": ["gpt-3.5-turbo", "gpt-4", "gpt-4-turbo"],
+            "base_url_default": "https://api.openai.com/v1",
+        },
+        {
+            "id": "anthropic",
+            "name": "Anthropic",
+            "models": [
+                "claude-3-opus-20240229",
+                "claude-3-sonnet-20240229",
+                "claude-3-haiku-20240307",
+            ],
+            "base_url_default": "https://api.anthropic.com",
+        },
+        {
+            "id": "zhipu",
+            "name": "智谱AI",
+            "models": ["glm-4", "glm-3-turbo"],
+            "base_url_default": "https://open.bigmodel.cn/api/paas/v4",
+        },
+        {
+            "id": "qianfan",
+            "name": "百度千帆",
+            "models": ["ERNIE-Bot", "ERNIE-Bot-4", "ERNIE-Bot-8k"],
+            "base_url_default": "https://aip.baidubce.com/rpc/2.0/ai_custom/v1/wenxinworkshop",
+        },
+        {
+            "id": "dashscope",
+            "name": "阿里云灵积",
+            "models": ["qwen-turbo", "qwen-plus", "qwen-max"],
+            "base_url_default": "https://dashscope.aliyuncs.com/api/v1",
+        },
+        # 新增大模型服务
+        {
+            "id": "qwen",
+            "name": "阿里云百炼",
+            "models": ["qwen-max", "qwen-plus", "qwen-turbo"],
+            "base_url_default": "https://dashscope.aliyuncs.com/api/v1",
+        },
+        {
+            "id": "bytedance",
+            "name": "字节跳动(豆包)",
+            "models": ["doubao-pro", "doubao-lite"],
+            "base_url_default": "https://api.doubao.com/v1",
+        },
+        {
+            "id": "huawei",
+            "name": "华为云",
+            "models": ["pangu-llm", "pangu-2"],
+            "base_url_default": "https://huawei-llm.cn-north-4.myhuaweicloud.com",
+        },
+        {
+            "id": "gemini",
+            "name": "Google Gemini",
+            "models": ["gemini-pro", "gemini-ultra"],
+            "base_url_default": "https://generativelanguage.googleapis.com/v1",
+        },
+        {
+            "id": "groq",
+            "name": "Groq",
+            "models": ["llama3-8b-8192", "llama3-70b-8192", "mixtral-8x7b-32768"],
+            "base_url_default": "https://api.groq.com/v1",
+        },
+        {
+            "id": "ollama",
+            "name": "Ollama",
+            "models": ["llama3", "mistral", "gemma"],
+            "base_url_default": "http://localhost:11434/api",
+        },
+        {
+            "id": "oneapi",
+            "name": "OneAPI",
+            "models": ["gpt-3.5-turbo", "gpt-4", "claude-3-opus"],
+            "base_url_default": "https://api.oneapi.com/v1",
+        },
+        {
+            "id": "openrouter",
+            "name": "OpenRouter",
+            "models": [
+                "openai/gpt-3.5-turbo",
+                "anthropic/claude-3-opus",
+                "google/gemini-pro",
+            ],
+            "base_url_default": "https://openrouter.ai/api/v1",
+        },
+        {
+            "id": "litellm",
+            "name": "LiteLLM",
+            "models": ["gpt-3.5-turbo", "claude-3-opus", "gemini-pro"],
+            "base_url_default": "http://localhost:8000",
+        },
+        {
+            "id": "copilot",
+            "name": "GitHub Copilot",
+            "models": ["copilot-chat"],
+            "base_url_default": "https://api.githubcopilot.com",
+        },
+        {
+            "id": "aws",
+            "name": "AWS Bedrock",
+            "models": ["anthropic.claude-v2", "amazon.titan-text", "ai21.j2-ultra"],
+            "base_url_default": "https://bedrock-runtime.us-east-1.amazonaws.com",
+        },
+        {
+            "id": "azure",
+            "name": "Azure OpenAI",
+            "models": ["gpt-35-turbo", "gpt-4", "gpt-4-turbo"],
+            "base_url_default": "https://your-resource-name.openai.azure.com",
+        },
+        {
+            "id": "moonshot",
+            "name": "硅基流动",
+            "models": ["moonshot-v1-8k", "moonshot-v1-32k", "moonshot-v1-128k"],
+            "base_url_default": "https://api.moonshot.cn/v1",
+        },
+    ]
+    return jsonify({"success": True, "providers": providers})
 
 
 # 添加一个简单的根路由，用于健康检查
@@ -609,11 +918,17 @@ if __name__ == "__main__":
     db_manager = DBManager(db_path=data_storage_path)
     audio_storage = AudioStorage(storage_dir=data_storage_path)
 
+    # 初始化LLM服务管理器
+    llm_manager = LLMServiceManager()
+
+    # 从数据库加载LLM配置
+    load_llm_configs()
+
     # 获取端口参数
     port = args.port
 
     # 同步加载模型
-    load_asr_model()
+    # load_asr_model()
 
     # 输出明确的启动信息，确保 Electron 能够捕获
     print(f"* Running on http://127.0.0.1:{port}")

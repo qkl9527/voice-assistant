@@ -3,16 +3,39 @@ import { ref, onMounted, onUnmounted, computed, watch, nextTick } from "vue";
 import Settings from "./components/Settings.vue";
 import History from "./components/History.vue";
 import AudioVisualizer from "./components/AudioVisualizer.vue";
-import MessageBox from "./components/MessageBox.vue";
+import Tip from "./components/Tip.vue";
+import LLMSettings from "./components/LLMSettings.vue";
+import TextProcessor from "./components/TextProcessor.vue";
 
 // 当前视图
-const currentView = ref("main"); // 'main', 'settings', 'history'
+const currentView = ref("main"); // 'main', 'settings', 'history', 'llm-settings', 'text-processor'
 
 // 状态变量
 const isRecording = ref(false);
 const recognizedText = ref("");
 const serviceStatus = ref("正在连接...");
+const llmModelsLoaded = ref(false); // 大语言模型是否已加载完成
+const isModelLoading = ref(false); // 模型是否正在加载中
 const autoInsert = ref(true);
+
+// 合并服务状态和模型加载状态的计算属性
+const combinedStatusText = computed(() => {
+  if (serviceStatus.value === "服务已启动") {
+    return llmModelsLoaded.value
+      ? "服务和模型已就绪"
+      : "服务已启动，模型未加载";
+  } else if (serviceStatus.value === "服务未启动") {
+    return "服务未启动";
+  } else if (
+    serviceStatus.value.includes("启动中") ||
+    serviceStatus.value.includes("正在启动") ||
+    serviceStatus.value.includes("重启")
+  ) {
+    return serviceStatus.value;
+  } else {
+    return serviceStatus.value; // 其他状态直接显示
+  }
+});
 const mediaRecorder = ref(null);
 const audioChunks = ref([]);
 const audioFirstChunk = ref(null);
@@ -41,6 +64,18 @@ const getPort = () => settings.value.port || 6100;
 const isSidebarCollapsed = ref(false);
 
 // 历史记录已移至后端SQLite数据库
+
+// LLM相关状态
+const selectedLLMModel = ref(""); // 选中的LLM模型
+const availableLLMModels = ref([]); // 可用的LLM模型列表
+const textProcessModes = ref([
+  { id: "fix_typos", name: "修正错别字", icon: "fas fa-spell-check" },
+  { id: "polish_text", name: "润色文本", icon: "fas fa-magic" },
+  { id: "summarize", name: "概述内容", icon: "fas fa-compress-alt" },
+  { id: "translate", name: "翻译(中译英)", icon: "fas fa-language" },
+]); // 文本处理模式列表
+const selectedProcessMode = ref("fix_typos"); // 选中的文本处理模式
+const isProcessing = ref(false); // 是否正在处理文本
 
 // 设置
 const settings = ref({
@@ -243,6 +278,12 @@ function selectHistoryItem(item) {
   currentView.value = "main";
 }
 
+// 使用处理后的文本
+function useProcessedText(text) {
+  recognizedText.value = text;
+  currentView.value = "main";
+}
+
 // 切换侧边栏折叠状态
 function toggleSidebar() {
   isSidebarCollapsed.value = !isSidebarCollapsed.value;
@@ -295,6 +336,118 @@ watch(currentView, (newView, oldView) => {
   }
 });
 
+// 加载LLM模型列表
+async function loadLLMModels() {
+  try {
+    if (!apiBaseUrl.value) return false;
+
+    console.log("正在加载LLM模型列表...");
+    const response = await fetch(`${apiBaseUrl.value}/api/llm/providers`);
+    if (response.ok) {
+      const data = await response.json();
+      if (data.success && data.providers) {
+        // 获取所有可用的LLM模型
+        const allModels = [];
+        data.providers.forEach((provider) => {
+          if (provider.models && provider.models.length > 0) {
+            // 为每个模型添加提供商信息
+            const providerModels = provider.models.map((model) => ({
+              id: `${provider.id}:${model}`,
+              name: `${provider.name} - ${model}`,
+              provider: provider.id,
+              model: model,
+            }));
+            allModels.push(...providerModels);
+          }
+        });
+
+        availableLLMModels.value = allModels;
+        console.log(`成功加载了${allModels.length}个LLM模型`);
+
+        // 如果没有选择模型，默认选择第一个
+        if (!selectedLLMModel.value && allModels.length > 0) {
+          selectedLLMModel.value = allModels[0].id;
+        }
+
+        return allModels.length > 0;
+      }
+    }
+    return false;
+  } catch (error) {
+    console.error("加载LLM模型列表失败:", error);
+    return false;
+  }
+}
+
+// 定期检查并加载模型列表
+function setupModelListChecker() {
+  // 每30秒检查一次，如果模型列表为空且服务已连接，则尝试加载
+  const checkInterval = setInterval(async () => {
+    if (
+      availableLLMModels.value.length === 0 &&
+      serviceStatus.value === "已连接" &&
+      apiBaseUrl.value
+    ) {
+      console.log("模型列表为空，尝试重新加载...");
+      await loadLLMModels();
+    }
+  }, 30000); // 30秒
+
+  // 组件卸载时清除定时器
+  onUnmounted(() => {
+    clearInterval(checkInterval);
+  });
+}
+
+// 处理文本
+async function processText() {
+  if (!recognizedText.value.trim() || isProcessing.value) return;
+
+  isProcessing.value = true;
+
+  try {
+    // 解析选中的模型
+    const [provider, model] = selectedLLMModel.value.split(":");
+
+    // 准备请求数据
+    const payload = {
+      text: recognizedText.value,
+      operation: selectedProcessMode.value,
+      provider: provider,
+      model: model,
+    };
+
+    // 如果是翻译操作，添加目标语言
+    if (selectedProcessMode.value === "translate") {
+      payload.target_language = "英文";
+    }
+
+    // 发送请求
+    const response = await fetch(`${apiBaseUrl.value}/api/llm/process`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+
+    const data = await response.json();
+
+    if (data.success) {
+      // 更新文本
+      recognizedText.value = data.result;
+      showTip("处理成功", "文本已成功处理", "success");
+    } else {
+      showTip("处理失败", data.error || "未知错误", "error");
+    }
+  } catch (error) {
+    console.error("处理文本失败:", error);
+    showTip("处理失败", error.message || "未知错误", "error");
+  } finally {
+    isProcessing.value = false;
+  }
+}
+
 // 获取 API 基础 URL
 onMounted(async () => {
   try {
@@ -337,6 +490,9 @@ onMounted(async () => {
         // 如果不是后置启动，则立即启动服务
         apiBaseUrl.value = await window.electronAPI.getApiBaseUrl();
         await checkServiceStatus();
+
+        // 加载LLM模型列表
+        await loadLLMModels();
       } else {
         // 如果是后置启动，设置服务状态为未启动
         serviceStatus.value = "服务未启动";
@@ -351,6 +507,9 @@ onMounted(async () => {
       // 在浏览器环境中，假设 API 在本地运行
       apiBaseUrl.value = `http://localhost:${getPort()}`;
       await checkServiceStatus();
+
+      // 加载LLM模型列表
+      await loadLLMModels();
     }
 
     // 初始化音频上下文
@@ -362,6 +521,9 @@ onMounted(async () => {
     } catch (error) {
       console.error("初始化音频上下文失败:", error);
     }
+
+    // 设置定期检查模型列表的机制
+    // setupModelListChecker();
   } catch (error) {
     console.error("获取 API URL 失败:", error);
     serviceStatus.value = "连接失败";
@@ -373,6 +535,7 @@ async function checkServiceStatus() {
   // 如果没有 API 基础 URL，说明服务未启动
   if (!apiBaseUrl.value) {
     serviceStatus.value = "服务未启动";
+    llmModelsLoaded.value = false;
     return false;
   }
 
@@ -389,16 +552,28 @@ async function checkServiceStatus() {
     if (response.ok) {
       const data = await response.json();
       console.log("服务状态响应:", data);
-      serviceStatus.value = data.model_loaded ? "已连接" : "模型加载中...";
+      serviceStatus.value = "服务已启动";
+      llmModelsLoaded.value = data.model_loaded ? true : false;
+
+      // 如果服务已连接，尝试加载LLM模型列表
+      if (data.model_loaded) {
+        const modelsLoaded = await loadLLMModels();
+        llmModelsLoaded.value = modelsLoaded;
+      } else {
+        llmModelsLoaded.value = false;
+      }
+
       return data.model_loaded;
     } else {
       console.log("服务状态响应不正常:", response.status);
-      serviceStatus.value = "连接失败1";
+      serviceStatus.value = "服务启动失败";
+      llmModelsLoaded.value = false;
       return false;
     }
   } catch (error) {
     console.error("检查服务状态失败:", error);
-    serviceStatus.value = "连接失败2";
+    serviceStatus.value = "服务启动失败";
+    llmModelsLoaded.value = false;
     return false;
   }
 }
@@ -543,11 +718,7 @@ async function startRecording() {
     }
   } catch (error) {
     console.error("开始录音失败:", error);
-    showMessage(
-      "录音失败",
-      "无法访问麦克风，请确保已授予麦克风权限。",
-      "error"
-    );
+    showTip("录音失败", "无法访问麦克风，请确保已授予麦克风权限。", "error");
   }
 }
 
@@ -646,7 +817,7 @@ async function sendAudioForRecognition(audioBlob) {
     }
   } catch (error) {
     console.error("发送音频失败:", error);
-    showMessage("发送失败", "发送音频失败，请检查网络连接。", "error");
+    showTip("发送失败", "发送音频失败，请检查网络连接。", "error");
   }
 }
 
@@ -677,7 +848,7 @@ async function insertText() {
 // 清空识别文本
 function clearText() {
   recognizedText.value = "";
-  // showMessage("已清空", "识别文本已清空", "info", 1500);
+  // showTip("已清空", "识别文本已清空", "info", 1500);
 }
 
 // 启动或重启服务
@@ -686,30 +857,103 @@ async function startOrRestartService() {
     // 根据当前状态决定是启动还是重启
     if (serviceStatus.value === "服务未启动") {
       serviceStatus.value = "正在启动服务...";
+      llmModelsLoaded.value = false;
       try {
         // 获取API基础URL（这会启动服务）
         apiBaseUrl.value = await window.electronAPI.getApiBaseUrl();
         // 等待一些时间，给服务启动的时间
         await new Promise((resolve) => setTimeout(resolve, 1000));
-        await checkServiceStatus();
+        const serviceReady = await checkServiceStatus();
+
+        // 如果服务状态检查没有加载模型列表（可能服务还在加载模型），再次尝试加载
+        if (serviceReady && availableLLMModels.value.length === 0) {
+          const modelsLoaded = await loadLLMModels();
+          llmModelsLoaded.value = modelsLoaded;
+        }
       } catch (error) {
-        console.error("启动服务失败:", error);
-        serviceStatus.value = "启动失败";
-        showMessage("启动失败", "语音识别服务启动失败，请重试", "error");
+        console.error("服务启动失败:", error);
+        serviceStatus.value = "服务启动失败";
+        llmModelsLoaded.value = false;
+        showTip("启动失败", "语音识别服务启动失败，请重试", "error");
       }
     } else {
       // 如果服务已经存在但连接失败，则重启服务
       serviceStatus.value = "正在重启服务...";
+      llmModelsLoaded.value = false;
       try {
         await window.electronAPI.restartPythonService();
         // 等待一些时间，给服务重启的时间
         await new Promise((resolve) => setTimeout(resolve, 1000));
-        await checkServiceStatus();
+        const serviceReady = await checkServiceStatus();
+
+        // 如果服务状态检查没有加载模型列表（可能服务还在加载模型），再次尝试加载
+        if (serviceReady && availableLLMModels.value.length === 0) {
+          const modelsLoaded = await loadLLMModels();
+          llmModelsLoaded.value = modelsLoaded;
+        }
       } catch (error) {
         console.error("重启服务失败:", error);
         serviceStatus.value = "重启失败";
-        showMessage("重启失败", "语音识别服务重启失败，请重试", "error");
+        llmModelsLoaded.value = false;
+        showTip("重启失败", "语音识别服务重启失败，请重试", "error");
       }
+    }
+  }
+}
+
+// 重新加载模型
+async function llmModelsLoadService() {
+  console.log("重新加载模型");
+  if (window.electronAPI) {
+    // 根据当前状态决定是启动还是重启
+    if (serviceStatus.value === "服务已启动") {
+      // 如果已经在加载中，不重复操作
+      if (isModelLoading.value) {
+        showTip("正在加载", "模型正在加载中，请稍候...", "info");
+        return;
+      }
+
+      try {
+        // 设置加载中状态
+        isModelLoading.value = true;
+
+        console.log(`模型加载: ${apiBaseUrl.value}/api/reload_model`);
+        const response = await fetch(`${apiBaseUrl.value}/api/reload_model`, {
+          mode: "cors",
+          credentials: "omit",
+          headers: {
+            "Content-Type": "application/json",
+            Accept: "application/json",
+          },
+        });
+        if (response.ok) {
+          const data = await response.json();
+          console.log("模型加载情况:", data);
+
+          llmModelsLoaded.value = data.success;
+
+          // 如果服务已连接，尝试加载LLM模型列表
+          const modelsLoaded = await loadLLMModels();
+
+          return true;
+        } else {
+          console.log("服务状态响应不正常:", response.status);
+          serviceStatus.value = "服务启动失败";
+          llmModelsLoaded.value = false;
+          showTip("加载失败", "模型加载失败，服务响应异常", "error");
+          return false;
+        }
+      } catch (error) {
+        console.error("模型加载失败:", error);
+        llmModelsLoaded.value = false;
+        showTip("加载失败", "模型加载失败: " + error.message, "error");
+        return false;
+      } finally {
+        // 无论成功或失败，都重置加载状态
+        isModelLoading.value = false;
+      }
+    } else {
+      showTip("服务未启动", "无法加载模型", "error");
     }
   }
 }
@@ -718,14 +962,65 @@ async function startOrRestartService() {
 async function restartService() {
   if (window.electronAPI) {
     serviceStatus.value = "正在重启服务...";
+    llmModelsLoaded.value = false;
     try {
       serviceStatus.value = await window.electronAPI.restartPythonService();
-      checkServiceStatus();
+      // 等待一些时间，给服务启动的时间
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      const serviceReady = await checkServiceStatus();
+
+      // 如果服务状态检查没有加载模型列表（可能服务还在加载模型），再次尝试加载
+      if (serviceReady && availableLLMModels.value.length === 0) {
+        const modelsLoaded = await loadLLMModels();
+        llmModelsLoaded.value = modelsLoaded;
+      }
     } catch (error) {
       console.error("重启服务失败:", error);
       serviceStatus.value = "重启失败";
-      showMessage("重启失败", "语音识别服务重启失败，请重试", "error");
+      llmModelsLoaded.value = false;
+      showTip("重启失败", "语音识别服务重启失败，请重试", "error");
     }
+  }
+}
+
+// 手动加载模型
+async function loadModels() {
+  if (serviceStatus.value !== "服务已启动") {
+    showTip("无法加载模型", "服务未启动，请先确保服务已启动", "warning");
+    return;
+  }
+
+  if (llmModelsLoaded.value) {
+    showTip("模型已加载", "大语言模型已经加载完成", "info");
+    return;
+  }
+
+  // 如果已经在加载中，不重复操作
+  if (isModelLoading.value) {
+    showTip("正在加载", "模型正在加载中，请稍候...", "info");
+    return;
+  }
+
+  // 设置加载中状态
+  isModelLoading.value = true;
+  showTip("加载中", "正在加载大语言模型，请稍候...", "info");
+
+  try {
+    const modelsLoaded = await loadLLMModels();
+    llmModelsLoaded.value = modelsLoaded;
+
+    if (modelsLoaded) {
+      showTip("加载成功", "大语言模型加载成功", "success");
+    } else {
+      showTip("加载失败", "大语言模型加载失败，请重试", "error");
+    }
+  } catch (error) {
+    console.error("加载模型失败:", error);
+    llmModelsLoaded.value = false;
+    showTip("加载失败", "大语言模型加载失败: " + error.message, "error");
+  } finally {
+    // 无论成功或失败，都重置加载状态
+    isModelLoading.value = false;
   }
 }
 
@@ -816,12 +1111,12 @@ watch(recognizedText, async () => {
 });
 
 // 显示消息提示框
-function showMessage(
+function showTip(
   title,
   message,
-  confirm = false,
-  hasCloseButton = false,
   type = "info",
+  confirm = false,
+  hasCloseButton = true,
   duration = 3000
 ) {
   messageBoxTitle.value = title;
@@ -831,12 +1126,7 @@ function showMessage(
   messageBoxType.value = type;
   messageBoxShow.value = true;
 
-  // 如果设置了自动关闭时间，则自动关闭
-  if (duration > 0) {
-    setTimeout(() => {
-      messageBoxShow.value = false;
-    }, duration);
-  }
+  // Tip组件内部会处理自动关闭
 }
 
 // 切换录音模式
@@ -844,11 +1134,7 @@ function toggleRecordingMode() {
   // 如果正在录音，无法切换模式，显示提示消息
   if (isRecording.value) {
     console.log("正在录音无法切换");
-    showMessage(
-      "无法切换模式",
-      "正在录音中，请先停止录音后再切换模式",
-      "warning"
-    );
+    showTip("无法切换模式", "正在录音中，请先停止录音后再切换模式", "warning");
     return;
   }
 
@@ -927,6 +1213,28 @@ onUnmounted(() => {
         </button>
 
         <button
+          @click="currentView = 'text-processor'"
+          :class="[
+            'sidebar-item',
+            currentView === 'text-processor' ? 'active' : '',
+          ]"
+        >
+          <i class="fas fa-magic"></i>
+          <span>文本AI处理</span>
+        </button>
+
+        <button
+          @click="currentView = 'llm-settings'"
+          :class="[
+            'sidebar-item',
+            currentView === 'llm-settings' ? 'active' : '',
+          ]"
+        >
+          <i class="fas fa-robot"></i>
+          <span>大模型设置</span>
+        </button>
+
+        <button
           @click="currentView = 'settings'"
           :class="['sidebar-item', currentView === 'settings' ? 'active' : '']"
         >
@@ -936,14 +1244,19 @@ onUnmounted(() => {
       </div>
 
       <div class="sidebar-footer">
+        <!-- 合并后的服务状态和模型加载状态 -->
         <div class="service-status">
           <span
             :class="[
               'status-indicator',
-              serviceStatus === '已连接' ? 'online' : 'offline',
+              serviceStatus === '服务已启动' && llmModelsLoaded
+                ? 'online'
+                : serviceStatus === '服务已启动'
+                ? 'yellow'
+                : 'offline',
             ]"
           ></span>
-          <span class="status-text">{{ serviceStatus }}</span>
+          <span class="status-text">{{ combinedStatusText }}</span>
         </div>
 
         <div class="service-actions">
@@ -961,6 +1274,19 @@ onUnmounted(() => {
           >
             <i class="fas fa-sync-alt"></i>
           </button>
+          <button
+            @click="llmModelsLoadService()"
+            class="icon-btn load-models-btn"
+            title="加载模型"
+            :disabled="serviceStatus !== '服务已启动' || isModelLoading"
+          >
+            <i
+              :class="[
+                'fas',
+                isModelLoading ? 'fa-spinner fa-spin' : 'fa-cloud-download-alt',
+              ]"
+            ></i>
+          </button>
         </div>
       </div>
     </div>
@@ -976,10 +1302,51 @@ onUnmounted(() => {
           <span
             :class="[
               'status-indicator',
-              serviceStatus === '已连接' ? 'online' : 'offline',
+              serviceStatus === '服务已启动' && llmModelsLoaded
+                ? 'online'
+                : serviceStatus === '服务已启动'
+                ? 'yellow'
+                : 'offline',
             ]"
           ></span>
-          <span class="status-text">{{ serviceStatus }}</span>
+          <span class="status-text">{{ combinedStatusText }}</span>
+
+          <!-- 折叠状态下的操作按钮 -->
+          <div class="collapsed-actions">
+            <button
+              @click="checkServiceStatus"
+              class="icon-btn-small check-model-btn"
+              title="检查服务"
+            >
+              <i class="fas fa-info"></i>
+            </button>
+            <button
+              @click="restartService"
+              class="icon-btn-small restart-btn"
+              title="重启服务"
+            >
+              <i class="fas fa-sync-alt"></i>
+            </button>
+            <button
+              @click="loadModels"
+              class="icon-btn-small load-models-btn"
+              title="加载模型"
+              :disabled="
+                serviceStatus !== '服务已启动' ||
+                llmModelsLoaded ||
+                isModelLoading
+              "
+            >
+              <i
+                :class="[
+                  'fas',
+                  isModelLoading
+                    ? 'fa-spinner fa-spin'
+                    : 'fa-cloud-download-alt',
+                ]"
+              ></i>
+            </button>
+          </div>
         </div>
       </div>
 
@@ -1002,12 +1369,14 @@ onUnmounted(() => {
               :class="[
                 'status-indicator',
                 'floating-status-indicator',
-                serviceStatus === '已连接' ? 'online' : 'offline',
+                serviceStatus === '服务已启动' && llmModelsLoaded
+                  ? 'online'
+                  : serviceStatus === '服务已启动'
+                  ? 'yellow'
+                  : 'offline',
               ]"
+              :title="combinedStatusText"
             ></span>
-            <!-- <span class="status-text floating-status-text">{{
-              serviceStatus
-            }}</span> -->
           </div>
         </div>
         <!-- 恢复按钮 -->
@@ -1040,8 +1409,7 @@ onUnmounted(() => {
           <div
             v-if="
               serviceStatus === '服务未启动' ||
-              serviceStatus === '连接失败1' ||
-              serviceStatus === '连接失败2' ||
+              serviceStatus === '服务连接失败' ||
               serviceStatus.includes('失败')
             "
             class="floating-service-not-started"
@@ -1060,16 +1428,35 @@ onUnmounted(() => {
           <!-- 服务正在加载时显示加载中状态 -->
           <div
             v-else-if="
-              serviceStatus === '模型加载中...' ||
+              serviceStatus === '服务启动中...' ||
               serviceStatus === '正在启动服务...' ||
-              serviceStatus === '正在重启服务...'
+              serviceStatus === '正在重启服务...' ||
+              isModelLoading
             "
             class="floating-service-loading"
           >
             <div class="floating-loading-spinner"></div>
+            <div class="floating-loading-text" v-if="isModelLoading">
+              模型加载中...
+            </div>
           </div>
 
-          <!-- 服务已连接时显示录音控制 -->
+          <!-- 服务已启动但模型未加载时显示加载模型按钮 -->
+          <div
+            v-else-if="serviceStatus === '服务已启动' && !llmModelsLoaded"
+            class="floating-service-not-started"
+          >
+            <button
+              @click="loadModels"
+              class="floating-start-service-btn"
+              title="加载模型"
+              :disabled="isModelLoading"
+            >
+              <i class="fas fa-cloud-download-alt"></i>
+            </button>
+          </div>
+
+          <!-- 服务已启动且模型已加载时显示录音控制 -->
           <div v-else class="floating-recording-controls">
             <!-- 录音模式切换按钮 -->
             <button
@@ -1080,7 +1467,7 @@ onUnmounted(() => {
                   ? '切换到一次性识别模式'
                   : '切换到实时流式识别模式'
               "
-              :disabled="isRecording || serviceStatus !== '已连接'"
+              :disabled="isRecording || serviceStatus !== '服务已启动'"
             >
               <i
                 class="fas"
@@ -1092,7 +1479,7 @@ onUnmounted(() => {
             <button
               @click="isRecording ? stopRecording() : startRecording()"
               :class="['floating-record-btn', isRecording ? 'recording' : '']"
-              :disabled="serviceStatus !== '已连接'"
+              :disabled="serviceStatus !== '服务已启动'"
             >
               <i
                 :class="['fas', isRecording ? 'fa-stop' : 'fa-microphone']"
@@ -1141,14 +1528,26 @@ onUnmounted(() => {
             <!-- 服务正在加载时显示加载中状态 -->
             <div
               v-else-if="
-                serviceStatus === '模型加载中...' ||
+                serviceStatus === '服务启动中...' ||
                 serviceStatus === '正在启动服务...' ||
-                serviceStatus === '正在重启服务...'
+                serviceStatus === '正在重启服务...' ||
+                isModelLoading
               "
               class="service-loading"
             >
               <div class="loading-spinner"></div>
-              <p>{{ serviceStatus }}</p>
+              <p>{{ isModelLoading ? "正在加载模型..." : serviceStatus }}</p>
+            </div>
+
+            <div v-else-if="!llmModelsLoaded" class="service-not-started">
+              <p>服务已启动，请加载语音识别模型</p>
+              <button
+                @click="llmModelsLoadService()"
+                class="start-service-btn"
+                :disabled="isModelLoading"
+              >
+                <i class="fas fa-cloud-download-alt"></i>加载模型
+              </button>
             </div>
 
             <!-- 录音模式切换按钮 -->
@@ -1162,7 +1561,7 @@ onUnmounted(() => {
                       ? '切换到一次性识别模式'
                       : '切换到实时流式识别模式'
                   "
-                  :disabled="isRecording || serviceStatus !== '已连接'"
+                  :disabled="isRecording || serviceStatus !== '服务已启动'"
                 >
                   <i
                     class="fas"
@@ -1178,7 +1577,7 @@ onUnmounted(() => {
               <button
                 @click="isRecording ? stopRecording() : startRecording()"
                 :class="['record-btn', isRecording ? 'recording' : '']"
-                :disabled="serviceStatus !== '已连接'"
+                :disabled="serviceStatus !== '服务已启动'"
               >
                 <i
                   :class="['fas', isRecording ? 'fa-stop' : 'fa-microphone']"
@@ -1199,23 +1598,90 @@ onUnmounted(() => {
             ref="textareaRef"
           ></textarea>
 
-          <div class="action-buttons">
-            <button
-              @click="insertText"
-              :disabled="!recognizedText.trim()"
-              class="action-btn"
-            >
-              <i class="fas fa-paste"></i>
-              插入文本
-            </button>
-            <button
-              @click="clearText"
-              :disabled="!recognizedText.trim()"
-              class="action-btn"
-            >
-              <i class="fas fa-trash-alt"></i>
-              清空
-            </button>
+          <!-- AI文本处理控制区 -->
+          <div class="text-process-controls">
+            <div class="controls-row">
+              <!-- 左侧：模型选择和文本处理模式 -->
+              <div class="left-controls">
+                <!-- 模型选择下拉框 -->
+                <div class="select-container">
+                  <select
+                    id="llm-model"
+                    v-model="selectedLLMModel"
+                    class="select-input"
+                    :disabled="isProcessing || !recognizedText.trim()"
+                  >
+                    <option value="" disabled>
+                      {{
+                        availableLLMModels.length === 0
+                          ? "加载中..."
+                          : "请选择模型"
+                      }}
+                    </option>
+                    <option
+                      v-for="model in availableLLMModels"
+                      :key="model.id"
+                      :value="model.id"
+                    >
+                      {{ model.name }}
+                    </option>
+                  </select>
+                </div>
+
+                <!-- 文本处理模式快捷按钮 -->
+                <div class="process-buttons">
+                  <button
+                    v-for="mode in textProcessModes"
+                    :key="mode.id"
+                    @click="
+                      selectedProcessMode = mode.id;
+                      processText();
+                    "
+                    :disabled="
+                      isProcessing ||
+                      !recognizedText.trim() ||
+                      !selectedLLMModel
+                    "
+                    class="process-mode-btn"
+                    :class="{
+                      active: selectedProcessMode === mode.id,
+                      processing:
+                        isProcessing && selectedProcessMode === mode.id,
+                    }"
+                    :title="mode.name"
+                  >
+                    <i
+                      :class="[
+                        mode.icon,
+                        isProcessing && selectedProcessMode === mode.id
+                          ? 'fa-spin'
+                          : '',
+                      ]"
+                    ></i>
+                  </button>
+                </div>
+              </div>
+
+              <!-- 右侧：插入文本和清空按钮 -->
+              <div class="right-controls">
+                <button
+                  @click="insertText"
+                  :disabled="!recognizedText.trim()"
+                  class="action-btn"
+                >
+                  <i class="fas fa-paste"></i>
+                  插入文本
+                </button>
+                <button
+                  @click="clearText"
+                  :disabled="!recognizedText.trim()"
+                  class="action-btn"
+                >
+                  <i class="fas fa-trash-alt"></i>
+                  清空
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -1233,16 +1699,31 @@ onUnmounted(() => {
         :settings="settings"
         :onSave="saveSettings"
       />
+
+      <!-- 大模型设置界面 -->
+      <LLMSettings
+        v-if="currentView === 'llm-settings'"
+        :apiBaseUrl="apiBaseUrl"
+        @saved="currentView = 'main'"
+      />
+
+      <!-- 文本处理界面 -->
+      <TextProcessor
+        v-if="currentView === 'text-processor'"
+        :apiBaseUrl="apiBaseUrl"
+        :initialText="recognizedText"
+        @use-result="useProcessedText"
+      />
     </div>
     <!-- 消息提示框 -->
-    <MessageBox
+    <Tip
       v-model:show="messageBoxShow"
       :title="messageBoxTitle"
       :message="messageBoxMessage"
       :type="messageBoxType"
       :showConfirm="messageBoxConfirm"
       :showClose="messageBoxShowClose"
-      :duration="0"
+      :duration="3000"
       @close="messageBoxShow = false"
     />
   </div>
@@ -1339,6 +1820,39 @@ onUnmounted(() => {
 .service-status-collapsed {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
+}
+
+.collapsed-actions {
+  display: flex;
+  margin-left: 10px;
+  gap: 5px;
+}
+
+.icon-btn-small {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 1px solid var(--border-color);
+  background-color: white;
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  font-size: 0.7rem;
+  transition: all 0.2s;
+}
+
+.icon-btn-small:hover {
+  background-color: var(--primary-color);
+  color: white;
+}
+
+.icon-btn-small:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  background-color: #f5f5f5;
 }
 
 /* 侧边栏样式 */
@@ -1361,7 +1875,7 @@ onUnmounted(() => {
 
 .sidebar-header h2 {
   margin: 0;
-  font-size: 1.5rem;
+  font-size: 1.3rem;
   font-weight: 500;
   color: var(--primary-color);
 }
@@ -1376,11 +1890,11 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   width: 100%;
-  padding: 12px 20px;
+  padding: 10px 18px;
   border: none;
   background: none;
   text-align: left;
-  font-size: 1rem;
+  font-size: 0.9rem;
   color: var(--text-secondary);
   cursor: pointer;
   transition: all 0.2s;
@@ -1399,8 +1913,8 @@ onUnmounted(() => {
 
 .sidebar-item i {
   margin-right: 12px;
-  font-size: 1.1rem;
-  width: 20px;
+  font-size: 0.95rem;
+  width: 18px;
   text-align: center;
 }
 
@@ -1441,16 +1955,25 @@ onUnmounted(() => {
   background-color: var(--success-color);
 }
 
+.status-indicator.yellow {
+  background-color: var(--warning-color);
+}
+
 .status-indicator.offline {
   background-color: var(--error-color);
 }
 
 .status-text {
-  font-size: 0.9rem;
+  font-size: 0.85rem;
   color: var(--text-secondary);
 }
 .floating-status-text {
-  font-size: 0.6rem;
+  font-size: 0.55rem;
+}
+.status-separator {
+  margin: 0 5px;
+  color: var(--text-secondary);
+  opacity: 0.5;
 }
 
 .service-actions {
@@ -1550,8 +2073,8 @@ onUnmounted(() => {
   align-items: center;
   justify-content: center;
   gap: 10px;
-  padding: 18px 36px;
-  font-size: 1.3rem;
+  padding: 16px 32px;
+  font-size: 1.1rem;
   font-weight: 500;
   border-radius: 50px;
   border: none;
@@ -1679,8 +2202,8 @@ onUnmounted(() => {
   align-items: center;
   justify-content: center;
   gap: 8px;
-  padding: 10px 20px;
-  font-size: 1rem;
+  padding: 8px 16px;
+  font-size: 0.85rem;
   border-radius: 50px;
   border: 1px solid var(--primary-color);
   background-color: white;
@@ -1701,7 +2224,7 @@ onUnmounted(() => {
 }
 
 .mode-toggle-btn i {
-  font-size: 0.9rem;
+  font-size: 0.8rem;
 }
 
 /* 浮动球模式下的录音控制 */
@@ -1716,8 +2239,8 @@ onUnmounted(() => {
 }
 
 .floating-mode-toggle-btn {
-  width: 36px;
-  height: 36px;
+  width: 32px;
+  height: 32px;
   border-radius: 50%;
   border: 1px solid var(--primary-color);
   background-color: white;
@@ -1727,7 +2250,7 @@ onUnmounted(() => {
   justify-content: center;
   cursor: pointer;
   transition: all 0.3s ease;
-  font-size: 0.8rem;
+  font-size: 0.75rem;
   -webkit-app-region: no-drag; /* 按钮区域不可拖动 */
   z-index: 10; /* 确保按钮在可视化器之上 */
 }
@@ -1771,7 +2294,7 @@ onUnmounted(() => {
   padding: 15px;
   border: 1px solid #e8e8e8;
   border-radius: var(--border-radius);
-  font-size: 1.1rem;
+  font-size: 0.95rem;
   resize: vertical;
   line-height: 1.6;
   transition: border-color 0.3s;
@@ -1785,11 +2308,89 @@ onUnmounted(() => {
   box-shadow: 0 0 0 2px rgba(24, 144, 255, 0.2);
 }
 
+.text-process-controls {
+  margin-top: 15px;
+  margin-bottom: 15px;
+}
+
+.controls-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 15px;
+}
+
+.left-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 1;
+  min-width: 300px;
+}
+
+.right-controls {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
+.select-container {
+  flex: 1;
+  min-width: 100px;
+  position: relative;
+  /* max-width: 300px; */
+}
+
+.process-buttons {
+  flex: 2;
+  display: flex;
+  gap: 8px;
+}
+
+.process-mode-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border: none;
+  border-radius: 50%;
+  background-color: #f5f5f5;
+  color: var(--text-secondary);
+  font-size: 1.1rem;
+  cursor: pointer;
+  transition: all 0.2s;
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+}
+
+.process-mode-btn:hover {
+  background-color: #e0e0e0;
+  transform: translateY(-2px);
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.15);
+}
+
+.process-mode-btn:disabled {
+  background-color: #f0f0f0;
+  color: #cccccc;
+  cursor: not-allowed;
+  box-shadow: none;
+  transform: none;
+}
+
+.process-mode-btn.active {
+  background-color: var(--primary-color);
+  color: white;
+}
+
+.process-mode-btn.processing {
+  background-color: var(--warning-color);
+  color: white;
+}
+
 .action-buttons {
   display: flex;
-  justify-content: flex-end;
   gap: 12px;
-  margin-top: 20px;
 }
 
 .action-btn {
@@ -1801,7 +2402,7 @@ onUnmounted(() => {
   border-radius: 4px;
   background-color: var(--primary-color);
   color: white;
-  font-size: 0.95rem;
+  font-size: 0.85rem;
   cursor: pointer;
   transition: all 0.2s;
 }
@@ -1817,13 +2418,13 @@ onUnmounted(() => {
 
 /* 图标按钮样式 */
 .icon-btn {
-  width: 32px;
-  height: 32px;
+  width: 30px;
+  height: 30px;
   border-radius: 50%;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 0.9rem;
+  font-size: 0.8rem;
   border: none;
   background-color: #f0f0f0;
   color: var(--text-secondary);
@@ -1921,8 +2522,8 @@ onUnmounted(() => {
 }
 
 .floating-record-btn {
-  width: 60px;
-  height: 60px;
+  width: 56px;
+  height: 56px;
   border-radius: 50%;
   background-color: var(--primary-color);
   color: white;
@@ -1930,7 +2531,7 @@ onUnmounted(() => {
   display: flex;
   justify-content: center;
   align-items: center;
-  font-size: 1.5rem;
+  font-size: 1.3rem;
   cursor: pointer;
   z-index: 2;
   box-shadow: 0 2px 10px rgba(24, 144, 255, 0.4);
@@ -2082,5 +2683,50 @@ onUnmounted(() => {
   border-radius: 50%;
   border-top-color: var(--primary-color);
   animation: spin 1s linear infinite;
+}
+
+/* 现代化扁平风格的下拉框 */
+.select-input {
+  width: 100%;
+  padding: 8px 12px;
+  border: none;
+  border-radius: 6px;
+  font-size: 13px;
+  background-color: #f5f7fa;
+  color: #333;
+  appearance: none; /* 移除默认的下拉箭头 */
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  cursor: pointer;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+  transition: all 0.3s ease;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%234a6cf7' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  padding-right: 30px;
+}
+
+.select-input:focus {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(74, 108, 247, 0.2);
+  background-color: #fff;
+}
+
+.select-input:hover {
+  background-color: #eef1f6;
+}
+
+.select-input:disabled {
+  background-color: #f0f0f0;
+  color: #999;
+  cursor: not-allowed;
+  box-shadow: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23999' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
+}
+
+.select-input option {
+  padding: 10px;
+  background-color: #fff;
+  color: #333;
 }
 </style>

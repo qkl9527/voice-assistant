@@ -217,10 +217,10 @@ async function shouldLazyLoadBackend() {
       const settings = JSON.parse(data);
       return settings && settings.lazyLoadBackend === true;
     }
-    return true;
+    return false;
   } catch (error) {
     console.error(`检查后置启动设置失败:`, error);
-    return true;
+    return false;
   }
 }
 

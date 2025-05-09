@@ -12,9 +12,14 @@
   --header-height: 60px;
   --border-radius: 8px;
   --shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  --font-size-base: 14px;
+  --font-size-sm: 12px;
+  --font-size-xs: 10px;
+  --font-size-lg: 16px;
 
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
     "Helvetica Neue", Arial, sans-serif;
+  font-size: var(--font-size-base);
   line-height: 1.5;
   font-weight: 400;
   font-synthesis: none;
