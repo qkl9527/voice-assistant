@@ -247,7 +247,9 @@ class LLMServiceManager:
 
         return available
 
-    async def process_text(self, text: str, operation: str, **kwargs) -> Dict[str, Any]:
+    async def process_text(
+        self, text: str, operation: str, provider: str = None, **kwargs
+    ) -> Dict[str, Any]:
         """
         处理文本
 
@@ -259,7 +261,7 @@ class LLMServiceManager:
         Returns:
             Dict[str, Any]: 处理结果
         """
-        service = self.get_service()
+        service = self.get_service(provider)
         if not service:
             return {"success": False, "error": "未找到可用的LLM服务"}
 

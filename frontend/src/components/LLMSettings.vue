@@ -74,7 +74,7 @@
           </div>
           <div class="setting-control">
             <input
-              type="password"
+              type="text"
               :id="`${activeProvider}-api-key`"
               v-model="providerConfigs[activeProvider].api_key"
               class="text-input"
@@ -93,7 +93,7 @@
           </div>
           <div class="setting-control">
             <input
-              type="password"
+              type="text"
               :id="`${activeProvider}-secret-key`"
               v-model="providerConfigs[activeProvider].secret_key"
               class="text-input"
@@ -112,7 +112,7 @@
           </div>
           <div class="setting-control">
             <input
-              type="password"
+              type="text"
               :id="`${activeProvider}-access-key`"
               v-model="providerConfigs[activeProvider].access_key"
               class="text-input"
@@ -411,7 +411,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, computed } from "vue";
+import { ref, onMounted, computed, watch } from "vue";
 
 const props = defineProps({
   apiBaseUrl: {
@@ -495,8 +495,42 @@ function updateCustomModel() {
   }
 }
 
+// 获取特定平台下最新更新的模型
+async function getLatestModelForProvider(providerId) {
+  try {
+    // 获取所有配置
+    const response = await fetch(`${props.apiBaseUrl}/api/llm/configs`);
+    if (response.ok) {
+      const data = await response.json();
+      if (data.success && data.configs) {
+        // 过滤出指定平台的配置
+        const providerConfigs = data.configs.filter(
+          (config) => config.provider === providerId
+        );
+
+        console.log("providerConfigs:", providerConfigs);
+
+        if (providerConfigs.length > 0) {
+          // 按更新时间降序排序
+          providerConfigs.sort((a, b) => {
+            return new Date(b.updated_at) - new Date(a.updated_at);
+          });
+
+          // 返回最新更新的模型
+          return providerConfigs[0].config.model;
+        }
+      }
+    }
+  } catch (error) {
+    console.error(`获取最新模型失败: ${error}`);
+  }
+
+  // 如果没有找到配置或发生错误，返回null
+  return null;
+}
+
 // 设置活动提供商
-function setActiveProvider(providerId) {
+async function setActiveProvider(providerId) {
   // 如果切换到不同的提供商
   if (activeProvider.value !== providerId) {
     // 重置自定义模型
@@ -506,20 +540,44 @@ function setActiveProvider(providerId) {
 
     // 检查是否有配置
     const provider = providers.value.find((p) => p.id === providerId);
-    if (provider && provider.is_configured) {
-      // 如果已配置，检查是否需要设置默认值
+    if (provider) {
+      // 获取当前配置
       const config = providerConfigs.value[providerId];
-      if (!config.model && providerModels.value[providerId]?.length > 0) {
-        config.model = providerModels.value[providerId][0];
+
+      // 获取该平台下最新更新的模型
+      const latestModel = await getLatestModelForProvider(providerId);
+      console.log("latestModel:", latestModel);
+
+      // 如果找到了最新模型，使用它
+      if (latestModel) {
+        console.log(`使用平台 ${providerId} 的最新更新模型: ${latestModel}`);
+        config.model = latestModel;
+      }
+      // 如果没有找到最新模型，但有模型列表，则使用最后一个模型
+      else if (
+        (!config.model ||
+          (providerModels.value[providerId]?.length > 0 &&
+            !providerModels.value[providerId].includes(config.model) &&
+            config.model !== "custom")) &&
+        providerModels.value[providerId]?.length > 0
+      ) {
+        // 使用最后一个模型（假设是最新更新的）
+        config.model =
+          providerModels.value[providerId][
+            providerModels.value[providerId].length - 1
+          ];
       }
 
-      // 如果当前模型是"custom"，但没有自定义模型值，则设置为第一个可用模型
+      // 如果当前模型是"custom"，但没有自定义模型值，则设置为最后一个可用模型
       if (
         config.model === "custom" &&
         !customModel.value &&
         providerModels.value[providerId]?.length > 0
       ) {
-        config.model = providerModels.value[providerId][0];
+        config.model =
+          providerModels.value[providerId][
+            providerModels.value[providerId].length - 1
+          ];
       }
     }
   }
@@ -669,13 +727,24 @@ async function loadConfigs() {
     if (response.ok) {
       const data = await response.json();
       if (data.success && data.configs) {
-        // 按更新时间排序，确保最新的配置在最后
+        // 按更新时间降序排序，确保最新的配置在前面
         const sortedConfigs = [...data.configs].sort((a, b) => {
-          return new Date(a.updated_at) - new Date(b.updated_at);
+          return new Date(b.updated_at) - new Date(a.updated_at);
+        });
+
+        // 创建提供商ID到最新配置的映射
+        const latestConfigByProvider = {};
+
+        // 先遍历一遍，找出每个提供商的最新配置
+        sortedConfigs.forEach((config) => {
+          const providerId = config.provider;
+          if (!latestConfigByProvider[providerId]) {
+            latestConfigByProvider[providerId] = config;
+          }
         });
 
         // 更新配置
-        sortedConfigs.forEach((config) => {
+        Object.values(latestConfigByProvider).forEach((config) => {
           const providerId = config.provider;
 
           // 如果提供商配置不存在，先创建一个空配置
@@ -693,10 +762,21 @@ async function loadConfigs() {
                   provider.base_url_default;
               }
 
-              // 如果有模型列表，使用第一个模型
+              // 如果有模型列表，使用最新配置的模型
               if (providerModels.value[providerId]?.length > 0) {
-                providerConfigs.value[providerId].model =
-                  providerModels.value[providerId][0];
+                // 使用最新配置中的模型，而不是默认第一个
+                const latestModel = config.config.model;
+                if (
+                  latestModel &&
+                  (providerModels.value[providerId].includes(latestModel) ||
+                    latestModel === "custom")
+                ) {
+                  providerConfigs.value[providerId].model = latestModel;
+                } else {
+                  // 如果最新模型不在列表中，使用第一个
+                  providerConfigs.value[providerId].model =
+                    providerModels.value[providerId][0];
+                }
               }
             }
           }
@@ -1033,11 +1113,87 @@ async function loadCategories() {
   }
 }
 
+// 加载特定模型的配置
+async function loadModelConfig(providerId, modelName) {
+  if (!providerId || !modelName || modelName === "custom") return;
+
+  try {
+    console.log(`正在加载模型配置: ${providerId}/${modelName}`);
+
+    // 获取所有配置
+    const response = await fetch(`${props.apiBaseUrl}/api/llm/configs`);
+    if (response.ok) {
+      const data = await response.json();
+      if (data.success && data.configs) {
+        // 按更新时间降序排序
+        const sortedConfigs = [...data.configs].sort((a, b) => {
+          return new Date(b.updated_at) - new Date(a.updated_at);
+        });
+
+        // 查找匹配的配置
+        const matchingConfig = sortedConfigs.find(
+          (config) =>
+            config.provider === providerId && config.config.model === modelName
+        );
+
+        if (matchingConfig) {
+          console.log(`找到匹配的模型配置: ${providerId}/${modelName}`);
+
+          // 保存当前的敏感信息
+          const currentConfig = providerConfigs.value[providerId];
+          const sensitiveInfo = {
+            api_key: currentConfig.api_key,
+            secret_key: currentConfig.secret_key,
+            access_key: currentConfig.access_key,
+          };
+
+          // 更新配置
+          for (const key in matchingConfig.config) {
+            if (key !== "model") {
+              // 不更新模型名称，因为这是用户刚刚选择的
+              currentConfig[key] = matchingConfig.config[key];
+            }
+          }
+
+          // 恢复敏感信息
+          if (sensitiveInfo.api_key)
+            currentConfig.api_key = sensitiveInfo.api_key;
+          if (sensitiveInfo.secret_key)
+            currentConfig.secret_key = sensitiveInfo.secret_key;
+          if (sensitiveInfo.access_key)
+            currentConfig.access_key = sensitiveInfo.access_key;
+
+          // 更新是否为默认
+          isDefault.value = matchingConfig.is_default;
+
+          console.log(`成功加载模型配置: ${providerId}/${modelName}`);
+        } else {
+          console.log(`未找到匹配的模型配置: ${providerId}/${modelName}`);
+        }
+      }
+    }
+  } catch (error) {
+    console.error(`加载模型配置失败: ${error}`);
+  }
+}
+
 // 组件挂载时加载配置和提供商信息
 onMounted(async () => {
   await loadCategories(); // 先加载分类信息
   await loadProviders(); // 再加载提供商信息
   await loadConfigs(); // 最后加载用户配置
+
+  // 监听模型变化
+  watch(
+    () =>
+      activeProvider.value &&
+      providerConfigs.value[activeProvider.value]?.model,
+    async (newModel, oldModel) => {
+      if (newModel && newModel !== oldModel && activeProvider.value) {
+        await loadModelConfig(activeProvider.value, newModel);
+      }
+    }
+  );
 });
 </script>
 

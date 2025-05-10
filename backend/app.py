@@ -594,7 +594,8 @@ def load_llm_configs():
 def get_llm_configs():
     """获取所有LLM配置"""
     try:
-        configs = db_manager.get_llm_configs()
+        provider = request.args.get("provider", None)
+        configs = db_manager.get_llm_configs(provider=provider)
 
         # 移除敏感信息
         safe_configs = []
@@ -611,10 +612,10 @@ def get_llm_configs():
 
             # 复制配置，但移除API密钥
             provider_config = config["config"].copy()
-            if "api_key" in provider_config:
-                provider_config["api_key"] = "******"
-            if "secret_key" in provider_config:
-                provider_config["secret_key"] = "******"
+            # if "api_key" in provider_config:
+            #     provider_config["api_key"] = "******"
+            # if "secret_key" in provider_config:
+            #     provider_config["secret_key"] = "******"
 
             safe_config["config"] = provider_config
             safe_configs.append(safe_config)
@@ -904,6 +905,13 @@ def get_llm_providers():
             provider = config["provider"]
             config_map[provider] = config
 
+        # 找出默认提供商
+        default_provider = None
+        for config in all_configs:
+            if config.get("is_default", False):
+                default_provider = config["provider"]
+                break
+
         # 转换为前端需要的格式，以平台为基础
         providers = []
         for platform in all_platforms:
@@ -932,6 +940,8 @@ def get_llm_providers():
                 "category": platform["category_id"] or "",
                 "sort": platform["sort"] or 0,
                 "is_configured": is_configured,
+                "is_default": provider
+                == default_provider,  # 添加是否为默认提供商的标志
             }
             providers.append(provider_config)
 

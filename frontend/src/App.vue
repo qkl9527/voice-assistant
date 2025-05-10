@@ -76,6 +76,7 @@ const textProcessModes = ref([
 ]); // 文本处理模式列表
 const selectedProcessMode = ref("fix_typos"); // 选中的文本处理模式
 const isProcessing = ref(false); // 是否正在处理文本
+const showAiTools = ref(false); // 是否显示AI工具面板
 
 // 设置
 const settings = ref({
@@ -179,7 +180,7 @@ async function saveSettings(newSettings) {
         alwaysOnTop: newSettings.alwaysOnTop,
         floatingMode: newSettings.floatingMode || false,
         visualizerType: newSettings.visualizerType,
-        lazyLoadBackend: newSettings.lazyLoadBackend || true,
+        lazyLoadBackend: newSettings.lazyLoadBackend,
         port: newSettings.port || 6100,
         debugMode: newSettings.debugMode || false,
         realtimeMode:
@@ -350,6 +351,8 @@ async function loadLLMModels() {
       if (data.success && data.providers) {
         // 获取所有可用的LLM模型
         const allModels = [];
+        let defaultModel = null;
+
         data.providers.forEach((provider) => {
           if (provider.models && provider.models.length > 0) {
             // 为每个模型添加提供商信息
@@ -358,7 +361,14 @@ async function loadLLMModels() {
               name: `${provider.name} - ${model}`,
               provider: provider.id,
               model: model,
+              is_default: provider.is_default || false,
             }));
+
+            // 如果是默认提供商，记录其最后一个模型（假设是最新更新的）
+            if (provider.is_default && providerModels.length > 0) {
+              defaultModel = providerModels[providerModels.length - 1];
+            }
+
             allModels.push(...providerModels);
           }
         });
@@ -366,9 +376,42 @@ async function loadLLMModels() {
         availableLLMModels.value = allModels;
         console.log(`成功加载了${allModels.length}个LLM模型`);
 
-        // 如果没有选择模型，默认选择第一个
+        // 尝试从本地存储获取上次使用的模型
+        let lastUsedModel = null;
+        if (window.electronAPI) {
+          try {
+            const lastUsedModelData = await window.electronAPI.loadFromStorage(
+              "lastUsedLLMModel"
+            );
+            if (lastUsedModelData && lastUsedModelData.modelId) {
+              // 检查上次使用的模型是否仍然可用
+              const modelExists = allModels.some(
+                (model) => model.id === lastUsedModelData.modelId
+              );
+              if (modelExists) {
+                lastUsedModel = lastUsedModelData.modelId;
+              }
+            }
+          } catch (e) {
+            console.error("加载上次使用的模型失败:", e);
+          }
+        }
+
+        // 选择模型的优先级：
+        // 1. 上次使用的模型（如果存在）
+        // 2. 默认提供商的最新模型
+        // 3. 第一个可用模型
         if (!selectedLLMModel.value && allModels.length > 0) {
-          selectedLLMModel.value = allModels[0].id;
+          if (lastUsedModel) {
+            selectedLLMModel.value = lastUsedModel;
+            console.log("使用上次选择的模型:", lastUsedModel);
+          } else if (defaultModel) {
+            selectedLLMModel.value = defaultModel.id;
+            console.log("使用默认提供商的最新模型:", defaultModel.id);
+          } else {
+            selectedLLMModel.value = allModels[0].id;
+            console.log("使用第一个可用模型:", allModels[0].id);
+          }
         }
 
         return allModels.length > 0;
@@ -401,6 +444,21 @@ function setupModelListChecker() {
   });
 }
 
+// 保存用户选择的模型
+async function saveSelectedModel(modelId) {
+  if (window.electronAPI && modelId) {
+    try {
+      await window.electronAPI.saveToStorage("lastUsedLLMModel", {
+        modelId: modelId,
+        timestamp: new Date().toISOString(),
+      });
+      console.log("已保存用户选择的模型:", modelId);
+    } catch (e) {
+      console.error("保存用户选择的模型失败:", e);
+    }
+  }
+}
+
 // 处理文本
 async function processText() {
   if (!recognizedText.value.trim() || isProcessing.value) return;
@@ -410,6 +468,9 @@ async function processText() {
   try {
     // 解析选中的模型
     const [provider, model] = selectedLLMModel.value.split(":");
+
+    // 保存用户选择的模型
+    await saveSelectedModel(selectedLLMModel.value);
 
     // 准备请求数据
     const payload = {
@@ -452,6 +513,8 @@ async function processText() {
 
 // 获取 API 基础 URL
 onMounted(async () => {
+  // 添加点击事件监听器，用于关闭AI工具面板
+  document.addEventListener("click", closeAiToolsPanel);
   try {
     // 检查是否在 Electron 环境中
     if (window.electronAPI) {
@@ -491,6 +554,8 @@ onMounted(async () => {
       if (!settings.value.lazyLoadBackend) {
         // 如果不是后置启动，则立即启动服务
         apiBaseUrl.value = await window.electronAPI.getApiBaseUrl();
+        // 等待一些时间，给服务启动的时间
+        await new Promise((resolve) => setTimeout(resolve, 800));
         await checkServiceStatus();
 
         // 加载LLM模型列表
@@ -802,10 +867,16 @@ async function sendStreamingAudio(audioBlob, record_id, chunk_id) {
       } else {
         const error = await response.json();
         console.error("实时识别失败:", error);
+        showTip(
+          "实时识别失败",
+          error.message || "语音识别失败，请重试",
+          "error"
+        );
       }
     };
   } catch (error) {
     console.error("发送音频失败:", error);
+    showTip("发送失败", "发送音频失败，请检查网络连接。", "error");
   }
 }
 
@@ -829,6 +900,7 @@ async function sendAudioForRecognition(audioBlob) {
     } else {
       const error = await response.json();
       console.error("识别失败:", error);
+      showTip("识别失败", error.message || "语音识别失败，请重试", "error");
     }
   } catch (error) {
     console.error("发送音频失败:", error);
@@ -877,7 +949,7 @@ async function startOrRestartService() {
         // 获取API基础URL（这会启动服务）
         apiBaseUrl.value = await window.electronAPI.getApiBaseUrl();
         // 等待一些时间，给服务启动的时间
-        await new Promise((resolve) => setTimeout(resolve, 1000));
+        await new Promise((resolve) => setTimeout(resolve, 800));
         const serviceReady = await checkServiceStatus();
 
         // 如果服务状态检查没有加载模型列表（可能服务还在加载模型），再次尝试加载
@@ -917,7 +989,7 @@ async function startOrRestartService() {
 }
 
 // 重新加载模型
-async function llmModelsLoadService() {
+async function audioModelsLoadService() {
   console.log("重新加载模型");
   if (window.electronAPI) {
     // 根据当前状态决定是启动还是重启
@@ -979,9 +1051,9 @@ async function restartService() {
     serviceStatus.value = "正在重启服务...";
     llmModelsLoaded.value = false;
     try {
-      serviceStatus.value = await window.electronAPI.restartPythonService();
+      apiBaseUrl.value = await window.electronAPI.restartPythonService();
       // 等待一些时间，给服务启动的时间
-      await new Promise((resolve) => setTimeout(resolve, 1000));
+      await new Promise((resolve) => setTimeout(resolve, 800));
       const serviceReady = await checkServiceStatus();
 
       // 如果服务状态检查没有加载模型列表（可能服务还在加载模型），再次尝试加载
@@ -995,6 +1067,19 @@ async function restartService() {
       llmModelsLoaded.value = false;
       showTip("重启失败", "语音识别服务重启失败，请重试", "error");
     }
+  }
+}
+
+// 复制文本到剪贴板
+async function copyText() {
+  if (!recognizedText.value.trim()) return;
+
+  try {
+    await navigator.clipboard.writeText(recognizedText.value);
+    showTip("复制成功", "文本已复制到剪贴板", "success", false, true, 1500);
+  } catch (error) {
+    console.error("复制文本失败:", error);
+    showTip("复制失败", "无法复制文本到剪贴板", "error");
   }
 }
 
@@ -1125,6 +1210,48 @@ watch(recognizedText, async () => {
   await scrollToBottom();
 });
 
+// 监听选中的LLM模型
+watch(selectedLLMModel, async (newValue) => {
+  if (newValue) {
+    await saveSelectedModel(newValue);
+  }
+});
+
+// 点击外部区域关闭AI工具面板
+function closeAiToolsPanel(event) {
+  // 如果AI工具面板已打开，且点击的不是AI工具面板或AI按钮
+  if (
+    showAiTools.value &&
+    !event.target.closest(".ai-tools-panel") &&
+    !event.target.closest(".editor-ai-btn")
+  ) {
+    showAiTools.value = false;
+  }
+}
+
+// 组件挂载时的事件监听器已在下方的onMounted中处理
+
+// 组件卸载时清理资源
+onUnmounted(() => {
+  // 移除点击事件监听器
+  document.removeEventListener("click", closeAiToolsPanel);
+
+  // 停止录音
+  if (mediaRecorder.value && isRecording.value) {
+    mediaRecorder.value.stop();
+  }
+
+  // 清除实时识别定时器
+  if (streamingInterval.value) {
+    clearInterval(streamingInterval.value);
+  }
+
+  // 关闭音频上下文
+  if (audioContext.value) {
+    audioContext.value.close();
+  }
+});
+
 // 显示消息提示框
 function showTip(
   title,
@@ -1166,20 +1293,7 @@ function toggleRecordingMode() {
   );
 }
 
-// 组件卸载时清理资源
-onUnmounted(() => {
-  if (mediaRecorder.value && isRecording.value) {
-    mediaRecorder.value.stop();
-  }
-
-  if (streamingInterval.value) {
-    clearInterval(streamingInterval.value);
-  }
-
-  if (audioContext.value) {
-    audioContext.value.close();
-  }
-});
+// 已在上面的onUnmounted中处理了事件监听器的移除
 </script>
 
 <template>
@@ -1235,7 +1349,7 @@ onUnmounted(() => {
           ]"
         >
           <i class="fas fa-magic"></i>
-          <span>文本AI处理</span>
+          <span>AI文本处理</span>
         </button>
 
         <button
@@ -1290,9 +1404,9 @@ onUnmounted(() => {
             <i class="fas fa-sync-alt"></i>
           </button>
           <button
-            @click="llmModelsLoadService()"
+            @click="audioModelsLoadService()"
             class="icon-btn load-models-btn"
-            title="加载模型"
+            title="加载语音模型"
             :disabled="serviceStatus !== '服务已启动' || isModelLoading"
           >
             <i
@@ -1343,9 +1457,9 @@ onUnmounted(() => {
               <i class="fas fa-sync-alt"></i>
             </button>
             <button
-              @click="loadModels"
+              @click="audioModelsLoadService"
               class="icon-btn-small load-models-btn"
-              title="加载模型"
+              title="加载语音模型"
               :disabled="
                 serviceStatus !== '服务已启动' ||
                 llmModelsLoaded ||
@@ -1506,195 +1620,216 @@ onUnmounted(() => {
 
       <!-- 主识别界面 -->
       <div v-if="currentView === 'main' && !isFloatingMode" class="main-view">
-        <!-- 英雄区域 - 录音控制和声纹可视化 -->
-        <div class="hero-section">
-          <div class="hero-content">
-            <div class="visualizer-container" :class="{ active: isRecording }">
+        <!-- 笔记编辑风格的主区域 -->
+        <div class="editor-container">
+          <!-- 文本编辑区 - 作为主角 -->
+          <div class="editor-text-container">
+            <textarea
+              v-model="recognizedText"
+              placeholder="说话开始识别..."
+              class="editor-text"
+              ref="textareaRef"
+            ></textarea>
+
+            <!-- 声纹可视化器（浮动在文本框底部） -->
+            <div
+              class="editor-visualizer-floating"
+              :class="{ active: isRecording }"
+            >
               <AudioVisualizer
                 :analyser="analyser"
                 :isRecording="isRecording"
                 :visualizerType="settings.visualizerType"
               />
             </div>
+          </div>
 
-            <!-- 服务未启动或未连接时显示启动服务按钮 -->
-            <div
-              v-if="
-                serviceStatus === '服务未启动' ||
-                serviceStatus === '连接失败1' ||
-                serviceStatus === '连接失败2' ||
-                serviceStatus.includes('失败')
-              "
-              class="service-not-started"
-            >
-              <p v-if="serviceStatus === '服务未启动'">语音识别服务未启动</p>
-              <p v-else>服务连接失败，请重新启动</p>
-              <button
-                @click="startOrRestartService()"
-                class="start-service-btn"
+          <!-- 底部控制区 -->
+          <div class="editor-controls">
+            <!-- 左侧：服务状态和控制 -->
+            <div class="editor-controls-left">
+              <!-- 服务状态指示器 -->
+              <div class="editor-service-status">
+                <span
+                  :class="[
+                    'status-indicator',
+                    serviceStatus === '服务已启动' && llmModelsLoaded
+                      ? 'online'
+                      : serviceStatus === '服务已启动'
+                      ? 'yellow'
+                      : 'offline',
+                  ]"
+                ></span>
+                <span class="status-text-small">{{ combinedStatusText }}</span>
+              </div>
+
+              <!-- 服务控制按钮 -->
+              <div
+                v-if="
+                  serviceStatus === '服务未启动' ||
+                  serviceStatus.includes('失败')
+                "
+                class="editor-service-controls"
               >
-                <i class="fas fa-play"></i>
-                {{
-                  serviceStatus === "服务未启动" ? "启动服务" : "重新启动服务"
-                }}
-              </button>
-            </div>
+                <button
+                  @click="startOrRestartService()"
+                  class="editor-service-btn"
+                >
+                  <i class="fas fa-play"></i>
+                  启动服务
+                </button>
+              </div>
 
-            <!-- 服务正在加载时显示加载中状态 -->
-            <div
-              v-else-if="
-                serviceStatus === '服务启动中...' ||
-                serviceStatus === '正在启动服务...' ||
-                serviceStatus === '正在重启服务...' ||
-                isModelLoading
-              "
-              class="service-loading"
-            >
-              <div class="loading-spinner"></div>
-              <p>{{ isModelLoading ? "正在加载模型..." : serviceStatus }}</p>
-            </div>
-
-            <div v-else-if="!llmModelsLoaded" class="service-not-started">
-              <p>服务已启动，请加载语音识别模型</p>
-              <button
-                @click="llmModelsLoadService()"
-                class="start-service-btn"
-                :disabled="isModelLoading"
+              <!-- 加载模型按钮 -->
+              <div
+                v-else-if="serviceStatus === '服务已启动' && !llmModelsLoaded"
+                class="editor-service-controls"
               >
-                <i class="fas fa-cloud-download-alt"></i>加载模型
-              </button>
+                <button
+                  @click="audioModelsLoadService"
+                  class="editor-service-btn"
+                  :disabled="isModelLoading"
+                >
+                  <i class="fas fa-cloud-download-alt"></i>
+                  加载语音模型
+                </button>
+              </div>
             </div>
 
-            <!-- 录音模式切换按钮 -->
-            <div v-else class="recording-controls">
-              <div class="recording-mode-toggle">
+            <!-- 中间：录音控制 -->
+            <div class="editor-controls-center">
+              <!-- 录音控制 -->
+              <div class="editor-recording-controls">
+                <!-- 录音按钮 -->
+                <button
+                  @click="isRecording ? stopRecording() : startRecording()"
+                  :class="['editor-record-btn', isRecording ? 'recording' : '']"
+                  :disabled="serviceStatus !== '服务已启动' || !llmModelsLoaded"
+                >
+                  <i
+                    :class="['fas', isRecording ? 'fa-stop' : 'fa-microphone']"
+                  ></i>
+                </button>
+              </div>
+            </div>
+
+            <!-- 右侧：AI工具和操作按钮 -->
+            <div class="editor-controls-right">
+              <!-- 模式切换按钮和AI工具按钮 -->
+              <div class="editor-ai-tools">
+                <!-- 录音模式切换按钮 -->
                 <button
                   @click="toggleRecordingMode"
-                  class="mode-toggle-btn"
+                  class="editor-mode-btn-with-text"
                   :title="
                     isRealtimeMode
                       ? '切换到一次性识别模式'
                       : '切换到实时流式识别模式'
                   "
-                  :disabled="isRecording || serviceStatus !== '服务已启动'"
+                  :disabled="
+                    isRecording ||
+                    serviceStatus !== '服务已启动' ||
+                    !llmModelsLoaded
+                  "
                 >
                   <i
                     class="fas"
                     :class="isRealtimeMode ? 'fa-stream' : 'fa-file-audio'"
                   ></i>
-                  <span>{{
-                    isRealtimeMode ? "实时流式识别" : "一次性识别"
-                  }}</span>
+                  <span>{{ isRealtimeMode ? "实时识别" : "一次性识别" }}</span>
                 </button>
-              </div>
-
-              <!-- 服务已连接时显示录音按钮 -->
-              <button
-                @click="isRecording ? stopRecording() : startRecording()"
-                :class="['record-btn', isRecording ? 'recording' : '']"
-                :disabled="serviceStatus !== '服务已启动'"
-              >
-                <i
-                  :class="['fas', isRecording ? 'fa-stop' : 'fa-microphone']"
-                ></i>
-                {{ isRecording ? "停止录音" : "开始录音" }}
-              </button>
-            </div>
-          </div>
-        </div>
-
-        <!-- 识别结果区域 -->
-        <div class="result-container">
-          <textarea
-            v-model="recognizedText"
-            placeholder="说话开始识别..."
-            class="result-text"
-            rows="5"
-            ref="textareaRef"
-          ></textarea>
-
-          <!-- AI文本处理控制区 -->
-          <div class="text-process-controls">
-            <div class="controls-row">
-              <!-- 左侧：模型选择和文本处理模式 -->
-              <div class="left-controls">
-                <!-- 模型选择下拉框 -->
-                <div class="select-container">
-                  <select
-                    id="llm-model"
-                    v-model="selectedLLMModel"
-                    class="select-input"
-                    :disabled="isProcessing || !recognizedText.trim()"
+                <div class="ai-tools-container">
+                  <!-- AI主按钮 -->
+                  <button
+                    class="editor-ai-btn"
+                    @click="showAiTools = !showAiTools"
+                    :class="{ active: showAiTools }"
+                    :disabled="!recognizedText.trim() || !llmModelsLoaded"
                   >
-                    <option value="" disabled>
-                      {{
-                        availableLLMModels.length === 0
-                          ? "加载中..."
-                          : "请选择模型"
-                      }}
-                    </option>
-                    <option
-                      v-for="model in availableLLMModels"
-                      :key="model.id"
-                      :value="model.id"
-                    >
-                      {{ model.name }}
-                    </option>
-                  </select>
+                    <i class="fas fa-robot"></i>
+                  </button>
+
+                  <!-- AI工具展开面板 -->
+                  <div class="ai-tools-panel" v-if="showAiTools">
+                    <!-- 模型选择下拉框 -->
+                    <div class="select-container">
+                      <select
+                        id="llm-model"
+                        v-model="selectedLLMModel"
+                        class="select-input"
+                        :disabled="isProcessing || !recognizedText.trim()"
+                      >
+                        <option value="" disabled>
+                          {{
+                            availableLLMModels.length === 0
+                              ? "加载中..."
+                              : "请选择模型"
+                          }}
+                        </option>
+                        <option
+                          v-for="model in availableLLMModels"
+                          :key="model.id"
+                          :value="model.id"
+                        >
+                          {{ model.name }}
+                        </option>
+                      </select>
+                    </div>
+
+                    <!-- 文本处理模式按钮 -->
+                    <div class="process-buttons">
+                      <button
+                        v-for="mode in textProcessModes"
+                        :key="mode.id"
+                        @click="
+                          selectedProcessMode = mode.id;
+                          processText();
+                        "
+                        :disabled="
+                          isProcessing ||
+                          !recognizedText.trim() ||
+                          !selectedLLMModel
+                        "
+                        class="process-mode-btn"
+                        :class="{
+                          active: selectedProcessMode === mode.id,
+                          processing:
+                            isProcessing && selectedProcessMode === mode.id,
+                        }"
+                        :title="mode.name"
+                      >
+                        <i
+                          :class="[
+                            mode.icon,
+                            isProcessing && selectedProcessMode === mode.id
+                              ? 'fa-spin'
+                              : '',
+                          ]"
+                        ></i>
+                      </button>
+                    </div>
+                  </div>
                 </div>
 
-                <!-- 文本处理模式快捷按钮 -->
-                <div class="process-buttons">
+                <!-- 操作按钮 -->
+                <div class="editor-action-buttons">
                   <button
-                    v-for="mode in textProcessModes"
-                    :key="mode.id"
-                    @click="
-                      selectedProcessMode = mode.id;
-                      processText();
-                    "
-                    :disabled="
-                      isProcessing ||
-                      !recognizedText.trim() ||
-                      !selectedLLMModel
-                    "
-                    class="process-mode-btn"
-                    :class="{
-                      active: selectedProcessMode === mode.id,
-                      processing:
-                        isProcessing && selectedProcessMode === mode.id,
-                    }"
-                    :title="mode.name"
+                    @click="copyText"
+                    :disabled="!recognizedText.trim()"
+                    class="editor-action-btn"
+                    title="复制内容"
                   >
-                    <i
-                      :class="[
-                        mode.icon,
-                        isProcessing && selectedProcessMode === mode.id
-                          ? 'fa-spin'
-                          : '',
-                      ]"
-                    ></i>
+                    <i class="fas fa-copy"></i>
+                  </button>
+                  <button
+                    @click="clearText"
+                    :disabled="!recognizedText.trim()"
+                    class="editor-action-btn"
+                    title="清空"
+                  >
+                    <i class="fas fa-trash-alt"></i>
                   </button>
                 </div>
-              </div>
-
-              <!-- 右侧：插入文本和清空按钮 -->
-              <div class="right-controls">
-                <button
-                  @click="insertText"
-                  :disabled="!recognizedText.trim()"
-                  class="action-btn"
-                >
-                  <i class="fas fa-paste"></i>
-                  插入文本
-                </button>
-                <button
-                  @click="clearText"
-                  :disabled="!recognizedText.trim()"
-                  class="action-btn"
-                >
-                  <i class="fas fa-trash-alt"></i>
-                  清空
-                </button>
               </div>
             </div>
           </div>
@@ -2000,10 +2135,12 @@ onUnmounted(() => {
 /* 主内容区样式 */
 .main-container {
   flex: 1;
-  padding: 30px;
+  padding: 5px;
   overflow-y: auto;
   transition: all 0.3s ease;
   width: calc(100% - var(--sidebar-width));
+  display: flex;
+  flex-direction: column;
 }
 
 .app-container.sidebar-collapsed .main-container {
@@ -2012,8 +2149,11 @@ onUnmounted(() => {
 }
 
 .main-view {
-  max-width: 800px;
-  margin: 0 auto;
+  max-width: 100%;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  height: 100%;
 }
 
 /* 英雄区域样式 */
@@ -2296,31 +2436,315 @@ onUnmounted(() => {
   }
 }
 
-/* 结果容器样式 */
-.result-container {
+/* 编辑器容器样式 - 笔记风格 */
+.editor-container {
+  display: flex;
+  flex-direction: column;
   background-color: white;
-  padding: 25px;
   border-radius: var(--border-radius);
   box-shadow: var(--shadow);
+  height: calc(100vh - 10px);
+  width: 100%;
+  padding: 20px;
+  position: relative;
+  overflow: hidden;
 }
 
-.result-text {
+/* 编辑器文本容器 */
+.editor-text-container {
+  flex: 1;
+  position: relative;
   width: 100%;
+  height: calc(100% - 90px); /* 减去底部控制区高度，适应新的高度 */
+}
+
+/* 编辑器文本区域 */
+.editor-text {
+  width: 100%;
+  height: 100%;
   padding: 15px;
-  border: 1px solid #e8e8e8;
-  border-radius: var(--border-radius);
-  font-size: 0.95rem;
-  resize: vertical;
-  line-height: 1.6;
-  transition: border-color 0.3s;
-  max-height: 200px;
+  border: none;
+  font-size: 0.9rem;
+  line-height: 1.5;
+  resize: none;
+  transition: all 0.3s;
   overflow-y: auto;
 }
 
-.result-text:focus {
+.editor-text:focus {
   outline: none;
-  border-color: var(--primary-color);
-  box-shadow: 0 0 0 2px rgba(24, 144, 255, 0.2);
+}
+
+/* 底部控制区 */
+.editor-controls {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 15px;
+  background-color: white;
+  position: relative; /* 添加相对定位，以便中间区域可以绝对定位 */
+  height: 80px; /* 增加高度，为中间的录音按钮提供足够空间 */
+}
+
+/* 左侧控制区 */
+.editor-controls-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 200px;
+  z-index: 5; /* 确保在中间区域下方 */
+}
+
+.editor-service-status {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.status-text-small {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+
+.editor-service-btn {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 10px;
+  font-size: 0.75rem;
+  border-radius: 4px;
+  border: none;
+  background-color: #52c41a;
+  color: white;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.editor-service-btn:hover {
+  background-color: #73d13d;
+}
+
+.editor-service-btn:disabled {
+  background-color: #cccccc;
+  cursor: not-allowed;
+}
+
+/* 中间控制区 */
+.editor-controls-center {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 10; /* 确保在其他元素之上 */
+}
+
+.editor-visualizer-floating {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 40px;
+  background-color: transparent;
+  overflow: hidden;
+  transition: all 0.3s ease;
+  opacity: 0.9;
+}
+
+.editor-visualizer-floating.active {
+  background-color: transparent;
+  animation: none;
+  opacity: 1;
+}
+
+.editor-recording-controls {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+}
+
+.editor-mode-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 1px solid var(--primary-color);
+  background-color: white;
+  color: var(--primary-color);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.8rem;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.editor-mode-btn-with-text {
+  padding: 6px 12px;
+  border-radius: 20px;
+  border: 1px solid var(--primary-color);
+  background-color: white;
+  color: var(--primary-color);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  font-size: 0.8rem;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.editor-mode-btn-with-text span {
+  font-size: 0.8rem;
+}
+
+.editor-mode-btn:hover,
+.editor-mode-btn-with-text:hover {
+  background-color: rgba(24, 144, 255, 0.1);
+}
+
+.editor-mode-btn:disabled,
+.editor-mode-btn-with-text:disabled {
+  border-color: #ccc;
+  color: #999;
+  background-color: #f5f5f5;
+  cursor: not-allowed;
+}
+
+.editor-record-btn {
+  width: 60px;
+  height: 60px;
+  border-radius: 50%;
+  border: none;
+  background-color: var(--primary-color);
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.3rem;
+  cursor: pointer;
+  transition: all 0.3s;
+  box-shadow: 0 4px 12px rgba(24, 144, 255, 0.4);
+  position: relative; /* 确保可以应用z-index */
+  z-index: 15; /* 确保在最上层 */
+}
+
+.editor-record-btn:hover {
+  background-color: var(--primary-hover);
+  transform: scale(1.05);
+}
+
+.editor-record-btn:disabled {
+  background-color: #cccccc;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+.editor-record-btn.recording {
+  background-color: var(--error-color);
+  animation: pulse 1.5s infinite;
+}
+
+/* 右侧控制区 */
+.editor-controls-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  justify-content: flex-end;
+  flex: 1;
+  z-index: 5; /* 确保在中间区域下方 */
+}
+
+.editor-ai-tools {
+  display: flex;
+  align-items: center;
+  gap: 15px;
+}
+
+.ai-tools-container {
+  position: relative;
+}
+
+.editor-ai-btn {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  border: none;
+  background-color: #f5f5f5;
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1rem;
+  cursor: pointer;
+  transition: all 0.2s;
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+}
+
+.editor-ai-btn:hover {
+  background-color: #e0e0e0;
+  transform: translateY(-2px);
+}
+
+.editor-ai-btn.active {
+  background-color: var(--primary-color);
+  color: white;
+}
+
+.editor-ai-btn:disabled {
+  background-color: #f0f0f0;
+  color: #cccccc;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+.ai-tools-panel {
+  position: absolute;
+  bottom: 50px;
+  right: 0;
+  width: 280px;
+  background-color: white;
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  padding: 15px;
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.editor-action-buttons {
+  display: flex;
+  gap: 8px;
+}
+
+.editor-action-btn {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: none;
+  background-color: #f5f5f5;
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.9rem;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.editor-action-btn:hover {
+  background-color: #e0e0e0;
+  transform: translateY(-2px);
+}
+
+.editor-action-btn:disabled {
+  background-color: #f0f0f0;
+  color: #cccccc;
+  cursor: not-allowed;
 }
 
 .text-process-controls {

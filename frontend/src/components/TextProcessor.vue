@@ -1,13 +1,31 @@
 <template>
   <div class="text-processor-container">
     <div class="processor-header">
-      <h3>文本处理</h3>
+      <h3>AI文本处理</h3>
+      <div class="model-selector">
+        <select
+          v-model="selectedModel"
+          class="model-select"
+          :disabled="isProcessing || !text"
+        >
+          <option value="" disabled>
+            {{ availableModels.length === 0 ? "加载中..." : "请选择模型" }}
+          </option>
+          <option
+            v-for="model in availableModels"
+            :key="model.id"
+            :value="model.id"
+          >
+            {{ model.name }}
+          </option>
+        </select>
+      </div>
       <div class="processor-actions">
-        <button 
-          v-for="operation in operations" 
+        <button
+          v-for="operation in operations"
           :key="operation.id"
           class="processor-action-btn"
-          :disabled="isProcessing || !text"
+          :disabled="isProcessing || !text || !selectedModel"
           @click="processText(operation.id)"
         >
           <i :class="operation.icon"></i>
@@ -15,22 +33,22 @@
         </button>
       </div>
     </div>
-    
+
     <div class="processor-content">
       <div class="original-text">
         <div class="text-header">
           <span>原始文本</span>
         </div>
         <div class="text-content">
-          <textarea 
-            v-model="text" 
-            placeholder="输入或粘贴需要处理的文本..." 
+          <textarea
+            v-model="text"
+            placeholder="输入或粘贴需要处理的文本..."
             class="text-area"
             :disabled="isProcessing"
           ></textarea>
         </div>
       </div>
-      
+
       <div class="processed-text">
         <div class="text-header">
           <span>处理结果</span>
@@ -50,17 +68,17 @@
             <i class="fas fa-spinner fa-spin"></i>
             处理中...
           </div>
-          <textarea 
+          <textarea
             v-else
-            v-model="processedText" 
-            placeholder="处理结果将显示在这里..." 
+            v-model="processedText"
+            placeholder="处理结果将显示在这里..."
             class="text-area"
             readonly
           ></textarea>
         </div>
       </div>
     </div>
-    
+
     <div v-if="error" class="error-message">
       <i class="fas fa-exclamation-circle"></i>
       {{ error }}
@@ -69,80 +87,194 @@
 </template>
 
 <script setup>
-import { ref, defineProps, defineEmits } from 'vue';
+import { ref, defineProps, defineEmits, onMounted } from "vue";
 
 const props = defineProps({
   apiBaseUrl: {
     type: String,
-    required: true
+    required: true,
   },
   initialText: {
     type: String,
-    default: ''
-  }
+    default: "",
+  },
 });
 
-const emit = defineEmits(['processed', 'use-result']);
+const emit = defineEmits(["processed", "use-result"]);
 
 // 文本内容
-const text = ref(props.initialText || '');
-const processedText = ref('');
+const text = ref(props.initialText || "");
+const processedText = ref("");
 const isProcessing = ref(false);
-const error = ref('');
-const lastOperation = ref('');
+const error = ref("");
+const lastOperation = ref("");
+
+// 模型选择
+const selectedModel = ref("");
+const availableModels = ref([]);
 
 // 可用的处理操作
 const operations = [
-  { id: 'fix_typos', name: '修正错别字', icon: 'fas fa-spell-check' },
-  { id: 'polish_text', name: '润色文本', icon: 'fas fa-magic' },
-  { id: 'summarize', name: '概述内容', icon: 'fas fa-compress-alt' },
-  { id: 'translate', name: '翻译(中译英)', icon: 'fas fa-language' }
+  { id: "fix_typos", name: "修正错别字", icon: "fas fa-spell-check" },
+  { id: "polish_text", name: "润色文本", icon: "fas fa-magic" },
+  { id: "summarize", name: "概述内容", icon: "fas fa-compress-alt" },
+  { id: "translate", name: "翻译(中译英)", icon: "fas fa-language" },
 ];
+
+// 加载LLM模型列表
+async function loadLLMModels() {
+  try {
+    if (!props.apiBaseUrl) return false;
+
+    console.log("正在加载LLM模型列表...");
+    const response = await fetch(
+      `${props.apiBaseUrl}/api/llm/providers?only_configured=true`
+    );
+    if (response.ok) {
+      const data = await response.json();
+      if (data.success && data.providers) {
+        // 获取所有可用的LLM模型
+        const allModels = [];
+        let defaultModel = null;
+
+        data.providers.forEach((provider) => {
+          if (provider.models && provider.models.length > 0) {
+            // 为每个模型添加提供商信息
+            const providerModels = provider.models.map((model) => ({
+              id: `${provider.id}:${model}`,
+              name: `${provider.name} - ${model}`,
+              provider: provider.id,
+              model: model,
+              is_default: provider.is_default || false,
+            }));
+
+            // 如果是默认提供商，记录其最后一个模型（假设是最新更新的）
+            if (provider.is_default && providerModels.length > 0) {
+              defaultModel = providerModels[providerModels.length - 1];
+            }
+
+            allModels.push(...providerModels);
+          }
+        });
+
+        availableModels.value = allModels;
+        console.log(`成功加载了${allModels.length}个LLM模型`);
+
+        // 尝试从本地存储获取上次使用的模型
+        let lastUsedModel = null;
+        if (window.electronAPI) {
+          try {
+            const lastUsedModelData = await window.electronAPI.loadFromStorage(
+              "lastUsedLLMModel"
+            );
+            if (lastUsedModelData && lastUsedModelData.modelId) {
+              // 检查上次使用的模型是否仍然可用
+              const modelExists = allModels.some(
+                (model) => model.id === lastUsedModelData.modelId
+              );
+              if (modelExists) {
+                lastUsedModel = lastUsedModelData.modelId;
+              }
+            }
+          } catch (e) {
+            console.error("加载上次使用的模型失败:", e);
+          }
+        }
+
+        // 选择模型的优先级：
+        // 1. 上次使用的模型（如果存在）
+        // 2. 默认提供商的最新模型
+        // 3. 第一个可用模型
+        if (!selectedModel.value && allModels.length > 0) {
+          if (lastUsedModel) {
+            selectedModel.value = lastUsedModel;
+            console.log("使用上次选择的模型:", lastUsedModel);
+          } else if (defaultModel) {
+            selectedModel.value = defaultModel.id;
+            console.log("使用默认提供商的最新模型:", defaultModel.id);
+          } else {
+            selectedModel.value = allModels[0].id;
+            console.log("使用第一个可用模型:", allModels[0].id);
+          }
+        }
+
+        return allModels.length > 0;
+      }
+    }
+    return false;
+  } catch (error) {
+    console.error("加载LLM模型列表失败:", error);
+    return false;
+  }
+}
+
+// 保存用户选择的模型
+async function saveSelectedModel(modelId) {
+  if (window.electronAPI && modelId) {
+    try {
+      await window.electronAPI.saveToStorage("lastUsedLLMModel", {
+        modelId: modelId,
+        timestamp: new Date().toISOString(),
+      });
+      console.log("已保存用户选择的模型:", modelId);
+    } catch (e) {
+      console.error("保存用户选择的模型失败:", e);
+    }
+  }
+}
 
 // 处理文本
 async function processText(operation) {
-  if (isProcessing.value || !text.value.trim()) return;
-  
+  if (isProcessing.value || !text.value.trim() || !selectedModel.value) return;
+
   isProcessing.value = true;
-  error.value = '';
+  error.value = "";
   lastOperation.value = operation;
-  
+
   try {
+    // 解析选中的模型
+    const [provider, model] = selectedModel.value.split(":");
+
+    // 保存用户选择的模型
+    await saveSelectedModel(selectedModel.value);
+
     const payload = {
       text: text.value,
-      operation: operation
+      operation: operation,
+      provider: provider,
+      model: model,
     };
-    
+
     // 如果是翻译操作，添加目标语言
-    if (operation === 'translate') {
-      payload.target_language = '英文';
+    if (operation === "translate") {
+      payload.target_language = "英文";
     }
-    
+
     const response = await fetch(`${props.apiBaseUrl}/api/llm/process`, {
-      method: 'POST',
+      method: "POST",
       headers: {
-        'Content-Type': 'application/json'
+        "Content-Type": "application/json",
       },
-      body: JSON.stringify(payload)
+      body: JSON.stringify(payload),
     });
-    
+
     const data = await response.json();
-    
+
     if (data.success) {
       processedText.value = data.result;
-      emit('processed', {
+      emit("processed", {
         original: text.value,
         processed: data.result,
-        operation: operation
+        operation: operation,
       });
     } else {
-      error.value = data.error || '处理失败';
-      processedText.value = '';
+      error.value = data.error || "处理失败";
+      // 不清空处理结果，只显示错误提示
     }
   } catch (err) {
-    console.error('处理文本失败:', err);
-    error.value = err.message || '处理失败，请检查网络连接';
-    processedText.value = '';
+    console.error("处理文本失败:", err);
+    error.value = err.message || "处理失败，请检查网络连接";
+    // 不清空处理结果，只显示错误提示
   } finally {
     isProcessing.value = false;
   }
@@ -151,23 +283,30 @@ async function processText(operation) {
 // 复制到剪贴板
 function copyToClipboard() {
   if (!processedText.value) return;
-  
-  navigator.clipboard.writeText(processedText.value)
+
+  navigator.clipboard
+    .writeText(processedText.value)
     .then(() => {
-      alert('已复制到剪贴板');
+      alert("已复制到剪贴板");
     })
-    .catch(err => {
-      console.error('复制失败:', err);
-      alert('复制失败');
+    .catch((err) => {
+      console.error("复制失败:", err);
+      alert("复制失败");
     });
 }
 
 // 使用处理结果
 function useProcessedText() {
   if (!processedText.value) return;
-  
-  emit('use-result', processedText.value);
+
+  emit("use-result", processedText.value);
 }
+
+// 组件挂载时加载模型列表
+onMounted(async () => {
+  // 加载LLM模型列表
+  await loadLLMModels();
+});
 </script>
 
 <style scoped>
@@ -183,16 +322,45 @@ function useProcessedText() {
   justify-content: space-between;
   align-items: center;
   margin-bottom: 15px;
+  flex-wrap: wrap;
+  gap: 10px;
 }
 
 .processor-header h3 {
   margin: 0;
   color: #333;
+  flex: 1;
+}
+
+.model-selector {
+  min-width: 200px;
+  max-width: 300px;
+}
+
+.model-select {
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  font-size: 14px;
+  background-color: #fff;
+  cursor: pointer;
+}
+
+.model-select:focus {
+  outline: none;
+  border-color: #4a6cf7;
+}
+
+.model-select:disabled {
+  background-color: #f9f9f9;
+  cursor: not-allowed;
 }
 
 .processor-actions {
   display: flex;
   gap: 8px;
+  flex-wrap: wrap;
 }
 
 .processor-action-btn {

@@ -885,7 +885,7 @@ class DBManager:
             if conn:
                 conn.close()
 
-    def get_llm_configs(self):
+    def get_llm_configs(self, provider = None):
         """获取所有LLM配置
 
         Returns:
@@ -895,15 +895,28 @@ class DBManager:
             conn = self.get_connection()
             cursor = conn.cursor()
 
-            cursor.execute(
+            if provider:
+                cursor.execute(
+                    """
+                SELECT c.id, c.provider, c.model, c.config_json, p.category_id, c.is_default, c.is_configured,
+                    p.name, p.base_url, c.created_at, c.updated_at
+                FROM llm_configs c
+                JOIN llm_platform p ON c.platform_id = p.id
+                WHERE c.provider = ?
+                ORDER BY c.is_default DESC, p.provider ASC
+                """,
+                    (provider,),
+                )
+            else:
+                cursor.execute(
+                    """
+                SELECT c.id, c.provider, c.model, c.config_json, p.category_id, c.is_default, c.is_configured,
+                    p.name, p.base_url, c.created_at, c.updated_at
+                FROM llm_configs c
+                JOIN llm_platform p ON c.platform_id = p.id
+                ORDER BY c.is_default DESC, p.provider ASC
                 """
-            SELECT c.id, p.provider, c.model, c.config_json, p.category_id, c.is_default, c.is_configured,
-                   p.name, p.base_url, p.created_at, p.updated_at
-            FROM llm_configs c
-            JOIN llm_platform p ON c.platform_id = p.id
-            ORDER BY c.is_default DESC, p.provider ASC
-            """
-            )
+                )
 
             configs = []
             for row in cursor.fetchall():

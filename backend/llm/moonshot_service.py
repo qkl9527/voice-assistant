@@ -61,7 +61,7 @@ class MoonshotService(BaseLLMService):
             logger.error(f"硅基流动服务不可用: {e}")
             return False
 
-    async def generate_text(self, prompt: str, **kwargs) -> str:
+    async def generate_text(self, prompt: str, **kwargs) -> Dict[str, Any]:
         """
         使用硅基流动生成文本
 
@@ -70,11 +70,15 @@ class MoonshotService(BaseLLMService):
             **kwargs: 其他参数
 
         Returns:
-            str: 生成的文本
+            Dict[str, Any]: 包含以下键的字典:
+                - success (bool): 操作是否成功
+                - result (str, 可选): 如果成功，返回生成的文本
+                - error (str, 可选): 如果失败，返回错误信息
         """
         if not self.is_available:
-            logger.error("硅基流动服务不可用")
-            return "服务不可用，请检查API配置"
+            error_msg = "硅基流动服务不可用，请检查API配置"
+            logger.error(error_msg)
+            return {"success": False, "error": error_msg}
 
         try:
             # 获取模型参数
@@ -113,18 +117,22 @@ class MoonshotService(BaseLLMService):
             if response.status_code == 200:
                 result = response.json()
                 if "choices" in result and len(result["choices"]) > 0:
-                    return result["choices"][0]["message"]["content"]
+                    return {
+                        "success": True,
+                        "result": result["choices"][0]["message"]["content"],
+                    }
                 else:
-                    logger.error(f"硅基流动响应格式异常: {result}")
-                    return "响应格式异常"
+                    error_msg = f"硅基流动响应格式异常: {result}"
+                    logger.error(error_msg)
+                    return {"success": False, "error": error_msg}
             else:
-                logger.error(
-                    f"硅基流动请求失败: {response.status_code}, {response.text}"
-                )
-                return f"请求失败: {response.text}"
+                error_msg = f"硅基流动请求失败: {response.status_code}, {response.text}"
+                logger.error(error_msg)
+                return {"success": False, "error": error_msg}
         except Exception as e:
-            logger.error(f"硅基流动文本生成失败: {e}")
-            return f"文本生成失败: {str(e)}"
+            error_msg = f"硅基流动文本生成失败: {str(e)}"
+            logger.error(error_msg)
+            return {"success": False, "error": error_msg}
 
     async def get_available_models(self) -> list:
         """

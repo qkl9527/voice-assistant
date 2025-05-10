@@ -6,7 +6,13 @@
 
 ## 软件截图
 
-![voice-assistant-screeshot.png](./voice-assistant-screeshot.png)
+![voice-assistant-screeshot.png](./screenshot/2025-05-11_00-23-49.png)
+
+## 下载
+
+[window 和 macos 下载](https://github.com/qkl9527/voice-assistant/releases)
+
+linux 版本请自己按下面教程可直接运行 或 编译后运行
 
 ## 功能特点
 
@@ -15,12 +21,7 @@
 - 语音对话的历史记录管理
 - 简洁直观的用户界面，用户可自定义大部分配置
 - 跨平台支持 (Windows, macOS, Linux)
-
-## 下载
-
-[window 和 macos 下载](https://github.com/qkl9527/voice-assistant/releases)
-
-linux 版本请自己按下面教程可直接运行 或 编译后运行
+- 支持 CPU / GPU 正在处理中
 
 ## 使用说明
 
@@ -47,6 +48,7 @@ linux 版本请自己按下面教程可直接运行 或 编译后运行
   - [x] 测试模型效果
 - [ ] 优化实时语音交互优化(当前实时转录效果不太佳)
 - [ ] 支持本地上传视频或语音识别
+- [ ] 支持 GPU(学习如何打包 GPU 版 Torch 和 cuda 依赖)
 - [ ] 增加声音克隆
 - [ ] 增加语音转文本(TTS)
 - [ ] 增加文本处理工作流

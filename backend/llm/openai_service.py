@@ -67,7 +67,7 @@ class OpenAIService(BaseLLMService):
             logger.error(f"OpenAI服务不可用: {e}")
             return False
 
-    async def generate_text(self, prompt: str, **kwargs) -> str:
+    async def generate_text(self, prompt: str, **kwargs) -> Dict[str, Any]:
         """
         使用OpenAI生成文本
 
@@ -76,11 +76,15 @@ class OpenAIService(BaseLLMService):
             **kwargs: 其他参数
 
         Returns:
-            str: 生成的文本
+            Dict[str, Any]: 包含以下键的字典:
+                - success (bool): 操作是否成功
+                - result (str, 可选): 如果成功，返回生成的文本
+                - error (str, 可选): 如果失败，返回错误信息
         """
         if not self.is_available or not self.client:
-            logger.error("OpenAI服务不可用")
-            return "服务不可用，请检查API配置"
+            error_msg = "OpenAI服务不可用，请检查API配置"
+            logger.error(error_msg)
+            return {"success": False, "error": error_msg}
 
         try:
             # 获取模型参数
@@ -105,10 +109,11 @@ class OpenAIService(BaseLLMService):
 
             # 提取生成的文本
             generated_text = response.choices[0].message.content.strip()
-            return generated_text
+            return {"success": True, "result": generated_text}
         except Exception as e:
-            logger.error(f"OpenAI文本生成失败: {e}")
-            return f"文本生成失败: {str(e)}"
+            error_msg = f"OpenAI文本生成失败: {str(e)}"
+            logger.error(error_msg)
+            return {"success": False, "error": error_msg}
 
     async def get_available_models(self) -> list:
         """
