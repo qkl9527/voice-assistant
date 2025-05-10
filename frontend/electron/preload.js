@@ -35,6 +35,11 @@ contextBridge.exposeInMainWorld("electronAPI", {
   saveToStorage: (key, data) =>
     ipcRenderer.invoke("save-to-storage", key, data),
   loadFromStorage: (key) => ipcRenderer.invoke("load-from-storage", key),
+
+  // 系统信息API
+  getSystemInfo: () => ipcRenderer.invoke("get-system-info"),
+  openExternal: (url) => ipcRenderer.invoke("open-external", url),
+  getAppIconPath: () => ipcRenderer.invoke("get-app-icon-path"),
 });
 
 // 当 DOM 加载完成时执行

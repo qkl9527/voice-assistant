@@ -1,7 +1,7 @@
 {
   "name": "voice-assistant",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "author": {
     "name": "qklin",
     "email": "qklandy@gmail.com"
@@ -49,6 +49,10 @@
       {
         "from": "../.venv",
         "to": ".venv"
+      },
+      {
+        "from": "../icons",
+        "to": "icons"
       }
     ],
     "extraFiles": [],

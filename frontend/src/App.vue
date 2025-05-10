@@ -6,9 +6,10 @@ import AudioVisualizer from "./components/AudioVisualizer.vue";
 import Tip from "./components/Tip.vue";
 import LLMSettings from "./components/LLMSettings.vue";
 import TextProcessor from "./components/TextProcessor.vue";
+import HelpAndFeedback from "./components/HelpAndFeedback.vue";
 
 // 当前视图
-const currentView = ref("main"); // 'main', 'settings', 'history', 'llm-settings', 'text-processor'
+const currentView = ref("main"); // 'main', 'settings', 'history', 'llm-settings', 'text-processor', 'help-feedback'
 
 // 状态变量
 const isRecording = ref(false);
@@ -1370,6 +1371,17 @@ function toggleRecordingMode() {
           <i class="fas fa-cog"></i>
           <span>设置</span>
         </button>
+
+        <button
+          @click="currentView = 'help-feedback'"
+          :class="[
+            'sidebar-item',
+            currentView === 'help-feedback' ? 'active' : '',
+          ]"
+        >
+          <i class="fas fa-question-circle"></i>
+          <span>帮助和反馈</span>
+        </button>
       </div>
 
       <div class="sidebar-footer">
@@ -1864,6 +1876,9 @@ function toggleRecordingMode() {
         :initialText="recognizedText"
         @use-result="useProcessedText"
       />
+
+      <!-- 帮助和反馈界面 -->
+      <HelpAndFeedback v-if="currentView === 'help-feedback'" />
     </div>
     <!-- 消息提示框 -->
     <Tip

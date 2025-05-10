@@ -520,3 +520,48 @@ ipcMain.handle("load-from-storage", (event, key) => {
     return null;
   }
 });
+
+// 获取系统信息
+ipcMain.handle("get-system-info", () => {
+  // 获取package.json中的版本号
+  const packageJson = require(path.join(__dirname, "..", "package.json"));
+  const appVersion = packageJson.version || "0.0.0";
+
+  return {
+    os: `${process.platform} ${process.arch}`,
+    electron: process.versions.electron,
+    chrome: process.versions.chrome,
+    node: process.versions.node,
+    v8: process.versions.v8,
+    appVersion: appVersion,
+  };
+});
+
+// 打开外部链接
+ipcMain.handle("open-external", (event, url) => {
+  const { shell } = require("electron");
+  shell.openExternal(url);
+  return true;
+});
+
+// 获取应用图标路径
+ipcMain.handle("get-app-icon-path", () => {
+  // 在开发模式和生产模式下，图标路径不同
+  let iconPath;
+
+  if (process.env.NODE_ENV === "development") {
+    // 开发模式下，使用项目根目录下的图标
+    iconPath = path.join(__dirname, "..", "..", "icons", "512x512.png");
+  } else {
+    // 生产模式下，使用打包后的资源目录
+    iconPath = path.join(process.resourcesPath, "icons", "512x512.png");
+  }
+
+  // 检查文件是否存在
+  if (fs.existsSync(iconPath)) {
+    return iconPath;
+  }
+
+  // 如果找不到图标，返回null
+  return null;
+});
