@@ -1,57 +1,59 @@
 """
 大语言模型基础类 - 定义LLM服务的通用接口
 """
+
 import abc
 import logging
 from typing import Dict, Any, List, Optional
 
 logger = logging.getLogger(__name__)
 
+
 class BaseLLMService(abc.ABC):
     """大语言模型服务基类，定义了与LLM交互的通用接口"""
-    
+
     def __init__(self, config: Dict[str, Any]):
         """
         初始化LLM服务
-        
+
         Args:
             config: LLM配置参数
         """
         self.config = config
         self.name = self.__class__.__name__
         self.is_available = False
-        
+
     @abc.abstractmethod
     def check_availability(self) -> bool:
         """
         检查LLM服务是否可用
-        
+
         Returns:
             bool: 服务是否可用
         """
         pass
-    
+
     @abc.abstractmethod
     async def generate_text(self, prompt: str, **kwargs) -> str:
         """
         生成文本
-        
+
         Args:
             prompt: 提示文本
             **kwargs: 其他参数
-            
+
         Returns:
             str: 生成的文本
         """
         pass
-    
+
     async def fix_typos(self, text: str) -> str:
         """
         修正文本中的错别字
-        
+
         Args:
             text: 原始文本
-            
+
         Returns:
             str: 修正后的文本
         """
@@ -59,14 +61,14 @@ class BaseLLMService(abc.ABC):
 
 {text}"""
         return await self.generate_text(prompt)
-    
+
     async def polish_text(self, text: str) -> str:
         """
         润色文本
-        
+
         Args:
             text: 原始文本
-            
+
         Returns:
             str: 润色后的文本
         """
@@ -74,14 +76,14 @@ class BaseLLMService(abc.ABC):
 
 {text}"""
         return await self.generate_text(prompt)
-    
+
     async def summarize(self, text: str) -> str:
         """
         概述文本内容
-        
+
         Args:
             text: 原始文本
-            
+
         Returns:
             str: 概述文本
         """
@@ -89,15 +91,15 @@ class BaseLLMService(abc.ABC):
 
 {text}"""
         return await self.generate_text(prompt)
-    
+
     async def translate(self, text: str, target_language: str = "英文") -> str:
         """
         翻译文本
-        
+
         Args:
             text: 原始文本
             target_language: 目标语言
-            
+
         Returns:
             str: 翻译后的文本
         """
@@ -105,3 +107,14 @@ class BaseLLMService(abc.ABC):
 
 {text}"""
         return await self.generate_text(prompt)
+
+    async def get_available_models(self) -> List[str]:
+        """
+        获取当前服务提供商可用的模型列表
+
+        Returns:
+            List[str]: 模型列表
+        """
+        # 默认实现，子类可以覆盖此方法
+        logger.info(f"获取{self.name}可用模型列表")
+        return []

@@ -38,6 +38,32 @@
     <div class="provider-settings">
       <!-- 动态配置界面 -->
       <div v-if="activeProvider && providerConfigs[activeProvider]">
+        <!-- 未配置密钥时的提示 -->
+        <div
+          class="setting-notice api-key-notice"
+          v-if="
+            !isConfigured(activeProvider) &&
+            activeProvider !== 'ollama' &&
+            (hasField('api_key') ||
+              hasField('secret_key') ||
+              hasField('access_key') ||
+              (activeProvider === 'azure' &&
+                (hasField('endpoint') || hasField('deployment_name'))))
+          "
+        >
+          <i class="fas fa-info-circle"></i>
+          <span v-if="activeProvider === 'azure'"
+            >请先配置API密钥、终端节点和部署名称等必要参数，然后才能使用此模型</span
+          >
+          <span v-else-if="hasField('secret_key') && !hasField('api_key')"
+            >请先配置Secret密钥等必要参数，然后才能使用此模型</span
+          >
+          <span v-else-if="hasField('access_key')"
+            >请先配置Access Key等必要参数，然后才能使用此模型</span
+          >
+          <span v-else>请先配置API密钥等必要参数，然后才能使用此模型</span>
+        </div>
+
         <!-- API密钥 -->
         <div class="setting-item" v-if="hasField('api_key')">
           <div class="setting-label">
@@ -217,8 +243,48 @@
               >选择要使用的{{ getProviderName() }}模型</span
             >
           </div>
-          <div class="setting-control">
+          <div class="setting-control model-control">
+            <!-- 当model_url为空但有模型列表时，显示下拉框和输入框组合 -->
+            <div
+              v-if="!hasModelUrl(activeProvider) && hasModels(activeProvider)"
+              class="model-input-group"
+            >
+              <select
+                :id="`${activeProvider}-model-select`"
+                v-model="providerConfigs[activeProvider].model"
+                class="select-input"
+              >
+                <option
+                  v-for="model in getProviderModels(activeProvider)"
+                  :key="model"
+                  :value="model"
+                >
+                  {{ model }}
+                </option>
+                <option value="custom">自定义模型...</option>
+              </select>
+              <input
+                v-if="providerConfigs[activeProvider].model === 'custom'"
+                type="text"
+                :id="`${activeProvider}-model-custom`"
+                v-model="customModel"
+                class="text-input"
+                placeholder="请输入模型名称"
+                @input="updateCustomModel"
+              />
+            </div>
+            <!-- 当model_url为空且没有模型列表时，显示纯输入框 -->
+            <input
+              v-else-if="!hasModelUrl(activeProvider)"
+              type="text"
+              :id="`${activeProvider}-model`"
+              v-model="providerConfigs[activeProvider].model"
+              class="text-input"
+              placeholder="请输入模型名称"
+            />
+            <!-- 当model_url不为空时，显示下拉框 -->
             <select
+              v-else
               :id="`${activeProvider}-model`"
               v-model="providerConfigs[activeProvider].model"
               class="select-input"
@@ -231,6 +297,51 @@
                 {{ model }}
               </option>
             </select>
+            <div class="model-buttons">
+              <button
+                class="btn-reload-models"
+                @click="fetchModels(activeProvider, false)"
+                :disabled="
+                  isLoadingModels ||
+                  !hasModelUrl(activeProvider) ||
+                  (!isConfigured(activeProvider) && activeProvider !== 'ollama')
+                "
+                :title="
+                  !hasModelUrl(activeProvider)
+                    ? '该平台不支持获取模型列表'
+                    : !isConfigured(activeProvider) &&
+                      activeProvider !== 'ollama'
+                    ? '请先配置API密钥'
+                    : '全量更新模型列表'
+                "
+              >
+                <i
+                  :class="[
+                    'fas',
+                    isLoadingModels ? 'fa-spinner fa-spin' : 'fa-sync-alt',
+                  ]"
+                ></i>
+              </button>
+              <button
+                class="btn-reload-models"
+                @click="fetchModels(activeProvider, true)"
+                :disabled="
+                  isLoadingModels ||
+                  !hasModelUrl(activeProvider) ||
+                  (!isConfigured(activeProvider) && activeProvider !== 'ollama')
+                "
+                :title="
+                  !hasModelUrl(activeProvider)
+                    ? '该平台不支持获取模型列表'
+                    : !isConfigured(activeProvider) &&
+                      activeProvider !== 'ollama'
+                    ? '请先配置API密钥'
+                    : '增量更新模型列表'
+                "
+              >
+                <i class="fas fa-plus"></i>
+              </button>
+            </div>
           </div>
         </div>
 
@@ -312,14 +423,7 @@ const props = defineProps({
 const emit = defineEmits(["saved"]);
 
 // 模型分类
-const providerCategories = ref([
-  { id: "all", name: "全部" },
-  { id: "international", name: "国际模型" },
-  { id: "chinese", name: "国内模型" },
-  { id: "cloud", name: "云服务" },
-  { id: "local", name: "本地部署" },
-  { id: "aggregator", name: "聚合服务" },
-]);
+const providerCategories = ref([{ id: "all", name: "全部" }]);
 
 // 当前活动的分类
 const activeCategory = ref("all");
@@ -328,35 +432,7 @@ const activeCategory = ref("all");
 const searchQuery = ref("");
 
 // 支持的服务提供商
-const providers = ref([
-  // 国际模型
-  { id: "openai", name: "OpenAI", category: "international" },
-  { id: "anthropic", name: "Anthropic", category: "international" },
-  { id: "gemini", name: "Google Gemini", category: "international" },
-  { id: "groq", name: "Groq", category: "international" },
-  { id: "copilot", name: "GitHub Copilot", category: "international" },
-  { id: "moonshot", name: "硅基流动", category: "international" },
-
-  // 国内模型
-  { id: "zhipu", name: "智谱AI", category: "chinese" },
-  { id: "qianfan", name: "百度千帆", category: "chinese" },
-  { id: "dashscope", name: "阿里云灵积", category: "chinese" },
-  { id: "qwen", name: "阿里云百炼", category: "chinese" },
-  { id: "bytedance", name: "字节跳动(豆包)", category: "chinese" },
-
-  // 云服务
-  { id: "huawei", name: "华为云", category: "cloud" },
-  { id: "aws", name: "AWS Bedrock", category: "cloud" },
-  { id: "azure", name: "Azure OpenAI", category: "cloud" },
-
-  // 本地部署
-  { id: "ollama", name: "Ollama", category: "local" },
-
-  // 聚合服务
-  { id: "oneapi", name: "OneAPI", category: "aggregator" },
-  { id: "openrouter", name: "OpenRouter", category: "aggregator" },
-  { id: "litellm", name: "LiteLLM", category: "aggregator" },
-]);
+const providers = ref([]);
 
 // 过滤后的提供商列表
 const filteredProviders = computed(() => {
@@ -393,14 +469,155 @@ const providerConfigs = ref({});
 // 各提供商模型列表
 const providerModels = ref({});
 
+// 模型加载状态
+const isLoadingModels = ref(false);
+
+// 自定义模型输入
+const customModel = ref("");
+
 // 获取指定提供商的模型列表
 function getProviderModels(providerId) {
   return providerModels.value[providerId] || [];
 }
 
+// 检查提供商是否有模型列表
+function hasModels(providerId) {
+  return (
+    providerModels.value[providerId] &&
+    providerModels.value[providerId].length > 0
+  );
+}
+
+// 更新自定义模型
+function updateCustomModel() {
+  if (customModel.value && customModel.value.trim() !== "") {
+    providerConfigs.value[activeProvider.value].model = customModel.value;
+  }
+}
+
 // 设置活动提供商
 function setActiveProvider(providerId) {
-  activeProvider.value = providerId;
+  // 如果切换到不同的提供商
+  if (activeProvider.value !== providerId) {
+    // 重置自定义模型
+    customModel.value = "";
+
+    activeProvider.value = providerId;
+
+    // 检查是否有配置
+    const provider = providers.value.find((p) => p.id === providerId);
+    if (provider && provider.is_configured) {
+      // 如果已配置，检查是否需要设置默认值
+      const config = providerConfigs.value[providerId];
+      if (!config.model && providerModels.value[providerId]?.length > 0) {
+        config.model = providerModels.value[providerId][0];
+      }
+
+      // 如果当前模型是"custom"，但没有自定义模型值，则设置为第一个可用模型
+      if (
+        config.model === "custom" &&
+        !customModel.value &&
+        providerModels.value[providerId]?.length > 0
+      ) {
+        config.model = providerModels.value[providerId][0];
+      }
+    }
+  }
+}
+
+// 检查提供商是否已配置API密钥
+function isConfigured(providerId) {
+  const provider = providers.value.find((p) => p.id === providerId);
+  return provider && provider.is_configured;
+}
+
+// 检查提供商是否有model_url
+function hasModelUrl(providerId) {
+  const provider = providers.value.find((p) => p.id === providerId);
+  return provider && provider.model_url && provider.model_url.trim() !== "";
+}
+
+// 从API获取模型列表
+async function fetchModels(providerId, isIncremental = false) {
+  if (!providerId || isLoadingModels.value) return;
+
+  // 检查是否已配置API密钥
+  if (!isConfigured(providerId) && providerId !== "ollama") {
+    alert("请先配置API密钥后再获取模型列表");
+    return;
+  }
+
+  try {
+    isLoadingModels.value = true;
+
+    // 获取当前配置
+    const currentConfig = providerConfigs.value[providerId];
+
+    // 获取平台信息
+    const provider = providers.value.find((p) => p.id === providerId);
+    if (!provider) {
+      alert(`未找到提供商信息: ${providerId}`);
+      isLoadingModels.value = false;
+      return;
+    }
+
+    // 发送请求获取模型列表
+    const response = await fetch(`${props.apiBaseUrl}/api/llm/fetch_models`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        provider: providerId,
+        config: currentConfig,
+        is_incremental: isIncremental,
+      }),
+    });
+
+    if (response.ok) {
+      const data = await response.json();
+      if (data.success && data.models && data.models.length > 0) {
+        // 更新模型列表
+        if (isIncremental && providerModels.value[providerId]) {
+          // 增量更新：合并现有模型和新模型，去重
+          const existingModels = new Set(providerModels.value[providerId]);
+          data.models.forEach((model) => existingModels.add(model));
+          providerModels.value[providerId] = Array.from(existingModels);
+        } else {
+          // 全量更新：直接使用新模型列表
+          providerModels.value[providerId] = data.models;
+        }
+
+        // 更新提供商的模型列表
+        provider.models = providerModels.value[providerId];
+
+        // 如果当前选择的模型不在列表中且不是自定义模型，选择第一个模型
+        if (
+          currentConfig.model !== "custom" &&
+          !provider.models.includes(currentConfig.model) &&
+          provider.models.length > 0
+        ) {
+          currentConfig.model = provider.models[0];
+        }
+
+        alert(
+          `成功${isIncremental ? "增量" : "全量"}获取到${
+            data.models.length
+          }个模型，当前共有${provider.models.length}个模型`
+        );
+      } else {
+        alert("未获取到模型列表，请检查API配置");
+      }
+    } else {
+      const errorData = await response.json();
+      alert(`获取模型列表失败: ${errorData.error || "请检查API配置"}`);
+    }
+  } catch (error) {
+    console.error("获取模型列表失败:", error);
+    alert(`获取模型列表失败: ${error.message}`);
+  } finally {
+    isLoadingModels.value = false;
+  }
 }
 
 // 检查当前提供商是否有指定字段
@@ -452,8 +669,13 @@ async function loadConfigs() {
     if (response.ok) {
       const data = await response.json();
       if (data.success && data.configs) {
+        // 按更新时间排序，确保最新的配置在最后
+        const sortedConfigs = [...data.configs].sort((a, b) => {
+          return new Date(a.updated_at) - new Date(b.updated_at);
+        });
+
         // 更新配置
-        data.configs.forEach((config) => {
+        sortedConfigs.forEach((config) => {
           const providerId = config.provider;
 
           // 如果提供商配置不存在，先创建一个空配置
@@ -479,25 +701,55 @@ async function loadConfigs() {
             }
           }
 
-          // 更新配置，但保留敏感信息
+          // 获取当前配置
           const currentConfig = providerConfigs.value[providerId];
           const newConfig = config.config;
 
-          // 合并配置，但不覆盖敏感信息
+          // 保存敏感信息
+          const sensitiveInfo = {
+            api_key: currentConfig.api_key,
+            secret_key: currentConfig.secret_key,
+            access_key: currentConfig.access_key,
+          };
+
+          // 完全替换配置（使用最新的配置）
           for (const key in newConfig) {
-            if (
-              key !== "api_key" &&
-              key !== "secret_key" &&
-              key !== "access_key"
-            ) {
-              currentConfig[key] = newConfig[key];
-            }
+            currentConfig[key] = newConfig[key];
           }
+
+          // 恢复敏感信息
+          if (sensitiveInfo.api_key)
+            currentConfig.api_key = sensitiveInfo.api_key;
+          if (sensitiveInfo.secret_key)
+            currentConfig.secret_key = sensitiveInfo.secret_key;
+          if (sensitiveInfo.access_key)
+            currentConfig.access_key = sensitiveInfo.access_key;
 
           // 如果是默认配置，设置为活动提供商
           if (config.is_default) {
             activeProvider.value = providerId;
             isDefault.value = true;
+          }
+
+          // 如果当前模型不在模型列表中，且不是"custom"，则可能是自定义模型
+          if (
+            currentConfig.model &&
+            providerModels.value[providerId] &&
+            !providerModels.value[providerId].includes(currentConfig.model) &&
+            currentConfig.model !== "custom"
+          ) {
+            // 如果平台没有model_url，则将该模型添加到模型列表中
+            const provider = providers.value.find((p) => p.id === providerId);
+            if (
+              provider &&
+              (!provider.model_url || provider.model_url.trim() === "")
+            ) {
+              // 增量更新模型列表
+              if (!providerModels.value[providerId]) {
+                providerModels.value[providerId] = [];
+              }
+              providerModels.value[providerId].push(currentConfig.model);
+            }
           }
         });
 
@@ -512,9 +764,77 @@ async function loadConfigs() {
 // 保存配置
 async function saveSettings() {
   try {
+    const currentConfig = providerConfigs.value[activeProvider.value];
+
+    // 检查配置是否有效（例如，是否有API密钥）
+    let isConfigured = false;
+    if (activeProvider.value === "ollama") {
+      // Ollama是本地服务，不需要API密钥
+      isConfigured = true;
+    } else if (
+      activeProvider.value === "qianfan" &&
+      currentConfig.secret_key &&
+      currentConfig.api_key
+    ) {
+      // 百度千帆需要两个密钥
+      isConfigured = true;
+    } else if (
+      activeProvider.value === "aws" &&
+      currentConfig.access_key &&
+      currentConfig.secret_key
+    ) {
+      // AWS需要两个密钥
+      isConfigured = true;
+    } else if (
+      activeProvider.value === "azure" &&
+      currentConfig.api_key &&
+      currentConfig.endpoint &&
+      currentConfig.deployment_name
+    ) {
+      // Azure需要API密钥、终端节点和部署名称
+      isConfigured = true;
+    } else if (currentConfig.api_key) {
+      // 其他服务只需要API密钥
+      isConfigured = true;
+    }
+
+    // 如果没有配置API密钥，提示用户
+    if (!isConfigured && activeProvider.value !== "ollama") {
+      const confirmSave = confirm(
+        "您尚未配置API密钥或必要参数，该模型将无法使用。是否仍要保存？"
+      );
+      if (!confirmSave) {
+        return;
+      }
+    }
+
+    // 获取当前提供商的分类
+    const provider = providers.value.find((p) => p.id === activeProvider.value);
+    const category_id = provider ? provider.category : null;
+
+    // 创建配置的深拷贝，避免修改原始对象
+    const configToSave = JSON.parse(JSON.stringify(currentConfig));
+
+    // 检查API密钥是否为星号，如果是则设置为空字符串，让后端保留原有值
+    if (configToSave.api_key === "******") {
+      console.log("API密钥为星号，将使用后端保存的原有值");
+      configToSave.api_key = "";
+    }
+
+    if (configToSave.secret_key === "******") {
+      console.log("Secret密钥为星号，将使用后端保存的原有值");
+      configToSave.secret_key = "";
+    }
+
+    if (configToSave.access_key === "******") {
+      console.log("Access Key为星号，将使用后端保存的原有值");
+      configToSave.access_key = "";
+    }
+
     const config = {
       provider: activeProvider.value,
-      config: providerConfigs.value[activeProvider.value],
+      config: configToSave,
+      category_id: category_id,
       is_default: isDefault.value,
     };
 
@@ -609,13 +929,20 @@ async function loadProviders() {
           name: provider.name,
           category: provider.category || "all", // 如果后端没有提供分类，默认为"all"
           base_url_default: provider.base_url_default,
+          model_url: provider.model_url,
+          models: provider.models || [],
+          sort: provider.sort || 0,
+          is_configured: provider.is_configured,
         }));
 
         // 更新模型列表并初始化配置
         data.providers.forEach((provider) => {
-          // 更新模型列表
+          // 更新模型列表 - 确保即使未配置API密钥也加载模型列表
           if (provider.models && provider.models.length > 0) {
             providerModels.value[provider.id] = provider.models;
+          } else {
+            // 如果没有模型列表，初始化为空数组
+            providerModels.value[provider.id] = [];
           }
 
           // 初始化配置（如果不存在）
@@ -624,6 +951,7 @@ async function loadProviders() {
             const defaultConfig = {
               temperature: 0.7,
               max_tokens: 1000,
+              model: "", // 初始化为空字符串
             };
 
             // 添加默认的base_url
@@ -655,6 +983,13 @@ async function loadProviders() {
 
             // 保存到配置对象
             providerConfigs.value[provider.id] = defaultConfig;
+          } else if (
+            !providerConfigs.value[provider.id].model &&
+            provider.models &&
+            provider.models.length > 0
+          ) {
+            // 如果配置已存在但没有模型，设置默认模型
+            providerConfigs.value[provider.id].model = provider.models[0];
           }
         });
 
@@ -666,10 +1001,43 @@ async function loadProviders() {
   }
 }
 
+// 加载分类
+async function loadCategories() {
+  try {
+    const response = await fetch(`${props.apiBaseUrl}/api/llm/categories`);
+    if (response.ok) {
+      const data = await response.json();
+      if (data.success && data.categories) {
+        // 保留"全部"分类
+        const allCategory = providerCategories.value.find(
+          (c) => c.id === "all"
+        );
+
+        // 更新分类列表
+        providerCategories.value = [
+          allCategory, // 保持"全部"分类在第一位
+          ...data.categories
+            .map((c) => ({
+              id: c.category_id,
+              name: c.name,
+              description: c.description,
+            }))
+            .filter((c) => c.id !== "all"),
+        ];
+
+        console.log("成功加载LLM分类");
+      }
+    }
+  } catch (error) {
+    console.error("加载LLM分类失败:", error);
+  }
+}
+
 // 组件挂载时加载配置和提供商信息
 onMounted(async () => {
-  await loadProviders(); // 先加载提供商信息
-  await loadConfigs(); // 再加载用户配置
+  await loadCategories(); // 先加载分类信息
+  await loadProviders(); // 再加载提供商信息
+  await loadConfigs(); // 最后加载用户配置
 });
 </script>
 
@@ -802,6 +1170,61 @@ h2 {
   flex: 2;
 }
 
+.model-control {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.model-input-group {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  flex: 1;
+  width: 100%;
+}
+
+.model-input-group select,
+.model-input-group input {
+  width: 100%;
+}
+
+.model-buttons {
+  display: flex;
+  gap: 5px;
+}
+
+.setting-notice {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px;
+  margin-top: 10px;
+  margin-bottom: 15px;
+  background-color: #f8f9fa;
+  border-radius: 4px;
+  border-left: 4px solid #17a2b8;
+  color: #495057;
+  font-size: 0.9rem;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+}
+
+.api-key-notice {
+  margin-top: 0;
+  margin-bottom: 20px;
+  background-color: #fff8e1;
+  border-left: 4px solid #ffc107;
+}
+
+.api-key-notice i {
+  color: #ffc107;
+}
+
+.setting-notice i {
+  color: #17a2b8;
+  font-size: 1.1rem;
+}
+
 .text-input,
 .select-input,
 .number-input {
@@ -810,6 +1233,30 @@ h2 {
   border: 1px solid #ddd;
   border-radius: 4px;
   font-size: 14px;
+}
+
+.btn-reload-models {
+  width: 36px;
+  height: 36px;
+  border: none;
+  border-radius: 4px;
+  background-color: #f5f5f5;
+  color: #333;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.3s;
+  flex-shrink: 0;
+}
+
+.btn-reload-models:hover:not(:disabled) {
+  background-color: #e0e0e0;
+}
+
+.btn-reload-models:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .text-input:focus,

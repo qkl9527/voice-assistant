@@ -25,6 +25,8 @@ from .copilot_service import CopilotService
 from .aws_service import AWSService
 from .azure_service import AzureService
 from .moonshot_service import MoonshotService
+from .deepseek_service import DeepSeekService
+from .silicflow_service import SilicFlowService
 
 logger = logging.getLogger(__name__)
 
@@ -174,6 +176,10 @@ class LLMServiceManager:
                 self.services[provider] = AzureService(config)
             elif provider == "moonshot":
                 self.services[provider] = MoonshotService(config)
+            elif provider == "deepseek":
+                self.services[provider] = DeepSeekService(config)
+            elif provider == "silicflow":
+                self.services[provider] = SilicFlowService(config)
             else:
                 logger.warning(f"未知的服务提供商: {provider}")
 

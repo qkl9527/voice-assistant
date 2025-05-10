@@ -4,7 +4,6 @@ import platform
 import tempfile
 import logging
 import argparse
-import asyncio
 import json
 from flask import Flask, request, jsonify, make_response, send_file
 from flask_cors import CORS
@@ -202,6 +201,14 @@ def status():
     # if asr_model is None and not model_loading and model_load_error is None:
     #     threading.Thread(target=load_asr_model).start()
 
+    # 获取已配置的模型数量
+    configured_models_count = 0
+    try:
+        configs = db_manager.get_llm_configs()
+        configured_models_count = len([c for c in configs if c["is_configured"]])
+    except Exception as e:
+        logger.error(f"获取已配置的LLM模型数量失败: {e}")
+
     response = jsonify(
         {
             "status": "running",
@@ -209,6 +216,7 @@ def status():
             "model_loading": model_loading,
             "model_error": model_load_error,
             "system": system,
+            "configured_llm_count": configured_models_count,
         }
     )
 
@@ -594,7 +602,9 @@ def get_llm_configs():
             safe_config = {
                 "id": config["id"],
                 "provider": config["provider"],
+                "category_id": config["category_id"],
                 "is_default": config["is_default"],
+                "is_configured": config["is_configured"],
                 "created_at": config["created_at"],
                 "updated_at": config["updated_at"],
             }
@@ -627,13 +637,85 @@ def save_llm_config():
         provider = data["provider"]
         config = data["config"]
         is_default = data.get("is_default", False)
+        category_id = data.get("category_id")
+
+        # 检查配置是否有效（例如，是否有API密钥）
+        has_api_key = False
+
+        # 获取当前配置，用于保留原有的API密钥
+        current_config = db_manager.get_llm_config(provider)
+
+        # 检查API密钥是否为屏蔽值（******）或空字符串，如果是则使用原有的值
+        if "api_key" in config:
+            if (
+                (config["api_key"] == "******" or config["api_key"] == "")
+                and current_config
+                and "api_key" in current_config["config"]
+            ):
+                config["api_key"] = current_config["config"]["api_key"]
+                logger.info(f"使用原有的API密钥值")
+            if config["api_key"] and config["api_key"] != "******":
+                has_api_key = True
+
+        if "secret_key" in config:
+            if (
+                (config["secret_key"] == "******" or config["secret_key"] == "")
+                and current_config
+                and "secret_key" in current_config["config"]
+            ):
+                config["secret_key"] = current_config["config"]["secret_key"]
+                logger.info(f"使用原有的Secret密钥值")
+            if config["secret_key"] and config["secret_key"] != "******":
+                has_api_key = True
+
+        if "access_key" in config:
+            if (
+                (config["access_key"] == "******" or config["access_key"] == "")
+                and current_config
+                and "access_key" in current_config["config"]
+            ):
+                config["access_key"] = current_config["config"]["access_key"]
+                logger.info(f"使用原有的Access Key值")
+
+        # Ollama是本地服务，不需要API密钥
+        if provider == "ollama":
+            has_api_key = True
+
+        # 获取平台信息，检查是否有model_url
+        platform = db_manager.get_llm_platform(provider)
+        if platform and (
+            not platform.get("model_url") or platform.get("model_url").strip() == ""
+        ):
+            # 如果平台没有model_url值，确保模型被添加到model_json
+            model = config.get("model", "")
+            if model and model not in platform.get("models", []):
+                logger.info(
+                    f"平台 {provider} 没有model_url值，将模型 {model} 增量更新到models_json"
+                )
+                # 在保存配置时会自动处理增量更新
 
         # 保存到数据库
         config_id = db_manager.save_llm_config(
             provider=provider,
             config_json=json.dumps(config, ensure_ascii=False),
+            category_id=category_id,
             is_default=is_default,
         )
+
+        # 更新is_configured字段
+        if config_id:
+            conn = db_manager.get_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                UPDATE llm_configs
+                SET is_configured = ?
+                WHERE id = ?
+                """,
+                (1 if has_api_key else 0, config_id),
+            )
+            conn.commit()
+            conn.close()
 
         if not config_id:
             return jsonify({"success": False, "error": "保存配置失败"}), 500
@@ -668,7 +750,7 @@ def delete_llm_config(provider):
 
 
 @app.route("/api/llm/process", methods=["POST"])
-async def process_text():
+def process_text():
     """使用LLM处理文本"""
     try:
         data = request.json
@@ -686,8 +768,17 @@ async def process_text():
         if operation == "translate":
             kwargs["target_language"] = data.get("target_language", "英文")
 
-        # 处理文本
-        result = await llm_manager.process_text(text, operation, **kwargs)
+        # 正确地同步调用异步函数
+        import asyncio
+
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            result = loop.run_until_complete(
+                llm_manager.process_text(text, operation, **kwargs)
+            )
+        finally:
+            loop.close()
 
         if not result["success"]:
             return jsonify(result), 500
@@ -720,130 +811,220 @@ def get_processed_texts():
         return jsonify({"success": False, "error": str(e)}), 500
 
 
+@app.route("/api/llm/categories", methods=["GET"])
+def get_llm_categories():
+    """获取LLM分类列表"""
+    try:
+        categories = db_manager.get_llm_categories()
+        return jsonify({"success": True, "categories": categories})
+    except Exception as e:
+        logger.error(f"获取LLM分类失败: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/llm/platforms", methods=["GET", "POST", "PUT", "DELETE"])
+def manage_llm_platforms():
+    """管理LLM平台信息"""
+    if request.method == "GET":
+        # 获取平台列表
+        try:
+            platforms = db_manager.get_llm_platforms()
+            return jsonify({"success": True, "platforms": platforms})
+        except Exception as e:
+            logger.error(f"获取LLM平台列表失败: {e}")
+            return jsonify({"success": False, "error": str(e)}), 500
+
+    elif request.method == "POST" or request.method == "PUT":
+        # 添加或更新平台
+        try:
+            data = request.json
+            if not data or "provider" not in data or "name" not in data:
+                return jsonify({"success": False, "error": "缺少必要参数"}), 400
+
+            provider = data["provider"]
+            name = data["name"]
+            base_url = data.get("base_url", "")
+            model_url = data.get("model_url", "")
+            category_id = data.get("category_id")
+            sort = data.get("sort", 0)
+
+            platform_id = db_manager.save_llm_platform(
+                provider=provider,
+                name=name,
+                base_url=base_url,
+                model_url=model_url,
+                category_id=category_id,
+                sort=sort,
+            )
+
+            if platform_id:
+                return jsonify({"success": True, "platform_id": platform_id})
+            else:
+                return jsonify({"success": False, "error": "保存平台信息失败"}), 500
+        except Exception as e:
+            logger.error(f"保存LLM平台信息失败: {e}")
+            return jsonify({"success": False, "error": str(e)}), 500
+
+    elif request.method == "DELETE":
+        # 删除平台
+        try:
+            data = request.json
+            if not data or "provider" not in data:
+                return jsonify({"success": False, "error": "缺少必要参数"}), 400
+
+            provider = data["provider"]
+
+            success = db_manager.delete_llm_platform(provider)
+
+            if success:
+                return jsonify({"success": True})
+            else:
+                return jsonify({"success": False, "error": "删除平台信息失败"}), 500
+        except Exception as e:
+            logger.error(f"删除LLM平台信息失败: {e}")
+            return jsonify({"success": False, "error": str(e)}), 500
+
+
 @app.route("/api/llm/providers", methods=["GET"])
 def get_llm_providers():
     """获取支持的LLM服务提供商列表"""
-    providers = [
-        # 主流大模型服务
-        {
-            "id": "openai",
-            "name": "OpenAI",
-            "models": ["gpt-3.5-turbo", "gpt-4", "gpt-4-turbo"],
-            "base_url_default": "https://api.openai.com/v1",
-        },
-        {
-            "id": "anthropic",
-            "name": "Anthropic",
-            "models": [
-                "claude-3-opus-20240229",
-                "claude-3-sonnet-20240229",
-                "claude-3-haiku-20240307",
-            ],
-            "base_url_default": "https://api.anthropic.com",
-        },
-        {
-            "id": "zhipu",
-            "name": "智谱AI",
-            "models": ["glm-4", "glm-3-turbo"],
-            "base_url_default": "https://open.bigmodel.cn/api/paas/v4",
-        },
-        {
-            "id": "qianfan",
-            "name": "百度千帆",
-            "models": ["ERNIE-Bot", "ERNIE-Bot-4", "ERNIE-Bot-8k"],
-            "base_url_default": "https://aip.baidubce.com/rpc/2.0/ai_custom/v1/wenxinworkshop",
-        },
-        {
-            "id": "dashscope",
-            "name": "阿里云灵积",
-            "models": ["qwen-turbo", "qwen-plus", "qwen-max"],
-            "base_url_default": "https://dashscope.aliyuncs.com/api/v1",
-        },
-        # 新增大模型服务
-        {
-            "id": "qwen",
-            "name": "阿里云百炼",
-            "models": ["qwen-max", "qwen-plus", "qwen-turbo"],
-            "base_url_default": "https://dashscope.aliyuncs.com/api/v1",
-        },
-        {
-            "id": "bytedance",
-            "name": "字节跳动(豆包)",
-            "models": ["doubao-pro", "doubao-lite"],
-            "base_url_default": "https://api.doubao.com/v1",
-        },
-        {
-            "id": "huawei",
-            "name": "华为云",
-            "models": ["pangu-llm", "pangu-2"],
-            "base_url_default": "https://huawei-llm.cn-north-4.myhuaweicloud.com",
-        },
-        {
-            "id": "gemini",
-            "name": "Google Gemini",
-            "models": ["gemini-pro", "gemini-ultra"],
-            "base_url_default": "https://generativelanguage.googleapis.com/v1",
-        },
-        {
-            "id": "groq",
-            "name": "Groq",
-            "models": ["llama3-8b-8192", "llama3-70b-8192", "mixtral-8x7b-32768"],
-            "base_url_default": "https://api.groq.com/v1",
-        },
-        {
-            "id": "ollama",
-            "name": "Ollama",
-            "models": ["llama3", "mistral", "gemma"],
-            "base_url_default": "http://localhost:11434/api",
-        },
-        {
-            "id": "oneapi",
-            "name": "OneAPI",
-            "models": ["gpt-3.5-turbo", "gpt-4", "claude-3-opus"],
-            "base_url_default": "https://api.oneapi.com/v1",
-        },
-        {
-            "id": "openrouter",
-            "name": "OpenRouter",
-            "models": [
-                "openai/gpt-3.5-turbo",
-                "anthropic/claude-3-opus",
-                "google/gemini-pro",
-            ],
-            "base_url_default": "https://openrouter.ai/api/v1",
-        },
-        {
-            "id": "litellm",
-            "name": "LiteLLM",
-            "models": ["gpt-3.5-turbo", "claude-3-opus", "gemini-pro"],
-            "base_url_default": "http://localhost:8000",
-        },
-        {
-            "id": "copilot",
-            "name": "GitHub Copilot",
-            "models": ["copilot-chat"],
-            "base_url_default": "https://api.githubcopilot.com",
-        },
-        {
-            "id": "aws",
-            "name": "AWS Bedrock",
-            "models": ["anthropic.claude-v2", "amazon.titan-text", "ai21.j2-ultra"],
-            "base_url_default": "https://bedrock-runtime.us-east-1.amazonaws.com",
-        },
-        {
-            "id": "azure",
-            "name": "Azure OpenAI",
-            "models": ["gpt-35-turbo", "gpt-4", "gpt-4-turbo"],
-            "base_url_default": "https://your-resource-name.openai.azure.com",
-        },
-        {
-            "id": "moonshot",
-            "name": "硅基流动",
-            "models": ["moonshot-v1-8k", "moonshot-v1-32k", "moonshot-v1-128k"],
-            "base_url_default": "https://api.moonshot.cn/v1",
-        },
-    ]
-    return jsonify({"success": True, "providers": providers})
+    # 是否只返回已配置的提供商
+    only_configured = request.args.get("only_configured", "false").lower() == "true"
+
+    try:
+        # 从数据库获取所有平台信息
+        all_platforms = db_manager.get_llm_platforms()
+
+        # 从数据库获取所有LLM配置
+        all_configs = db_manager.get_llm_configs()
+
+        # 创建提供商ID到配置信息的映射
+        config_map = {}
+        for config in all_configs:
+            provider = config["provider"]
+            config_map[provider] = config
+
+        # 转换为前端需要的格式，以平台为基础
+        providers = []
+        for platform in all_platforms:
+            provider = platform["provider"]
+
+            # 获取该平台的配置信息（如果存在）
+            config = config_map.get(provider, None)
+
+            # 确定是否已配置
+            is_configured = False
+            models = []
+            if config:
+                is_configured = config["is_configured"]
+                models = config.get("config", {}).get("models", [])
+
+            # 如果平台的models_json字段有值，优先使用它
+            if platform["models"] and not models:
+                models = platform["models"]
+
+            provider_config = {
+                "id": provider,
+                "name": platform["name"],
+                "models": models,
+                "base_url_default": platform["base_url"],
+                "model_url": platform["model_url"],
+                "category": platform["category_id"] or "",
+                "sort": platform["sort"] or 0,
+                "is_configured": is_configured,
+            }
+            providers.append(provider_config)
+
+        # 如果请求只返回已配置的提供商，进行过滤
+        if only_configured:
+            providers = [p for p in providers if p["is_configured"]]
+
+        # 按照sort字段排序
+        providers.sort(key=lambda p: (p.get("sort", 0), p["id"]))
+
+        return jsonify({"success": True, "providers": providers})
+    except Exception as e:
+        logger.error(f"获取LLM提供商列表失败: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/llm/fetch_models", methods=["POST"])
+def fetch_models():
+    """从官方API获取模型列表"""
+    try:
+        data = request.json
+        if not data or "provider" not in data:
+            return jsonify({"success": False, "error": "缺少必要参数"}), 400
+
+        provider = data["provider"]
+        config = data.get("config", {})
+
+        # 获取服务实例
+        service = llm_manager.get_service(provider)
+        if not service:
+            # 如果服务不存在，尝试初始化
+            llm_manager.update_config(provider, config)
+            service = llm_manager.get_service(provider)
+
+        if not service:
+            return (
+                jsonify({"success": False, "error": f"无法初始化{provider}服务"}),
+                500,
+            )
+
+        # 检查服务是否可用
+        if not service.check_availability():
+            return (
+                jsonify(
+                    {"success": False, "error": f"{provider}服务不可用，请检查API配置"}
+                ),
+                400,
+            )
+
+        # 获取模型列表
+        try:
+
+            # 同步调用异步函数
+            import asyncio
+
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                models = loop.run_until_complete(service.get_available_models())
+            finally:
+                loop.close()
+            is_incremental = data.get("is_incremental", False)
+
+            # 更新数据库中的模型列表
+            if models:
+                # 更新平台的模型列表
+                db_manager.update_platform_models(provider, models, is_incremental)
+
+                # 获取当前配置
+                current_config = db_manager.get_llm_config(provider)
+                if current_config:
+                    # 更新模型列表
+                    config_data = current_config["config"]
+                    config_data["models"] = models
+
+                    # 保存回数据库
+                    db_manager.save_llm_config(
+                        provider=provider,
+                        config_json=json.dumps(config_data, ensure_ascii=False),
+                        category_id=current_config.get("category_id"),
+                        is_default=current_config.get("is_default", False),
+                    )
+
+            return jsonify({"success": True, "models": models})
+        except Exception as e:
+            logger.error(f"获取{provider}模型列表失败: {e}")
+            return (
+                jsonify({"success": False, "error": f"获取模型列表失败: {str(e)}"}),
+                500,
+            )
+    except Exception as e:
+        logger.error(f"获取模型列表失败: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
 
 
 # 添加一个简单的根路由，用于健康检查
@@ -856,7 +1037,7 @@ def health_check():
 # 处理 OPTIONS 请求
 @app.route("/", defaults={"path": ""}, methods=["OPTIONS"])
 @app.route("/<path:path>", methods=["OPTIONS"])
-def options_handler(path):
+def options_handler(_):
     response = make_response()
     response.status_code = 200
     return response

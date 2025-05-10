@@ -342,7 +342,9 @@ async function loadLLMModels() {
     if (!apiBaseUrl.value) return false;
 
     console.log("正在加载LLM模型列表...");
-    const response = await fetch(`${apiBaseUrl.value}/api/llm/providers`);
+    const response = await fetch(
+      `${apiBaseUrl.value}/api/llm/providers?only_configured=true`
+    );
     if (response.ok) {
       const data = await response.json();
       if (data.success && data.providers) {
@@ -553,12 +555,25 @@ async function checkServiceStatus() {
       const data = await response.json();
       console.log("服务状态响应:", data);
       serviceStatus.value = "服务已启动";
+
+      // 检查是否有已配置的LLM模型
+      const hasConfiguredLLMs =
+        data.configured_llm_count && data.configured_llm_count > 0;
+
+      // 检查ASR模型是否已加载
       llmModelsLoaded.value = data.model_loaded ? true : false;
 
       // 如果服务已连接，尝试加载LLM模型列表
       if (data.model_loaded) {
-        const modelsLoaded = await loadLLMModels();
-        llmModelsLoaded.value = modelsLoaded;
+        // 只有在有已配置的模型时才尝试加载
+        if (hasConfiguredLLMs) {
+          const modelsLoaded = await loadLLMModels();
+          llmModelsLoaded.value = modelsLoaded;
+        } else {
+          console.log("没有已配置的LLM模型，跳过加载");
+          // 虽然没有已配置的模型，但ASR模型已加载，所以仍然设置为true
+          llmModelsLoaded.value = true;
+        }
       } else {
         llmModelsLoaded.value = false;
       }
@@ -933,7 +948,7 @@ async function llmModelsLoadService() {
           llmModelsLoaded.value = data.success;
 
           // 如果服务已连接，尝试加载LLM模型列表
-          const modelsLoaded = await loadLLMModels();
+          await loadLLMModels();
 
           return true;
         } else {
