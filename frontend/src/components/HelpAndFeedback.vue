@@ -1,9 +1,8 @@
 <template>
   <div class="help-feedback-container">
     <div class="about-section">
-      <div class="app-logo">
-        <img v-if="appIconPath" :src="appIconPath" alt="VoiceAssistant Logo" />
-        <img v-else src="../assets/logo.png" alt="VoiceAssistant Logo" />
+      <div v-if="appIconPath" class="app-logo">
+        <img :src="appIconPath" alt="VoiceAssistant Logo" />
       </div>
       <h2>VoiceAssistant</h2>
       <div class="version-info">
@@ -187,7 +186,8 @@ async function getAppIconPath() {
       const iconPath = await window.electronAPI.getAppIconPath();
       if (iconPath) {
         // 将文件路径转换为URL
-        appIconPath.value = `file://${iconPath}`;
+        // appIconPath.value = `file://${iconPath}`;
+        appIconPath.value = iconPath;
         console.log("应用图标路径:", appIconPath.value);
       }
     } catch (error) {
@@ -197,7 +197,7 @@ async function getAppIconPath() {
 }
 
 onMounted(async () => {
-  getSystemInfo();
+  await getSystemInfo();
   await getAppIconPath();
 });
 </script>
@@ -224,8 +224,8 @@ onMounted(async () => {
 }
 
 .app-logo img {
-  width: 80px;
-  height: 80px;
+  width: 200px;
+  height: 200px;
   border-radius: 10px;
 }
 

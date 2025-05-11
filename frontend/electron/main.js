@@ -554,10 +554,16 @@ ipcMain.handle("get-app-icon-path", () => {
     iconPath = path.join(__dirname, "..", "..", "icons", "512x512.png");
   } else {
     // 生产模式下，使用打包后的资源目录
-    iconPath = path.join(process.resourcesPath, "icons", "512x512.png");
+    iconPath = path.join(
+      process.resourcesPath,
+      "icons",
+      "icons",
+      "512x512.png"
+    );
   }
 
-  // 检查文件是否存在
+  console.log("iconPath:", iconPath, fs.existsSync(iconPath));
+
   if (fs.existsSync(iconPath)) {
     return iconPath;
   }
